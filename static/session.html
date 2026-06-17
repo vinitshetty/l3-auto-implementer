@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hydra - Session Detail</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <nav>
+    <span class="logo">Hydra</span>
+    <a href="/static/index.html">Sessions</a>
+    <a href="/static/triage.html">Triage Queue</a>
+  </nav>
+
+  <div class="container">
+    <!-- Session header -->
+    <div class="card" id="session-header">
+      <div class="card-header">
+        <span class="card-title" id="session-title">Loading...</span>
+        <span class="badge" id="session-status"></span>
+      </div>
+      <div class="card-meta" id="session-meta"></div>
+    </div>
+
+    <!-- CI signal panel (shown for ci_monitoring) -->
+    <div class="assist-panel" id="ci-panel" style="display:none">
+      <h3>Waiting for CI Result</h3>
+      <p style="color:var(--text-secondary);font-size:13px">No webhook configured? Send a manual CI signal:</p>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button onclick="sendCISignal('success')" style="background:var(--test-pass)">CI Passed</button>
+        <button onclick="sendCISignal('failure')" style="background:var(--test-fail)">CI Failed</button>
+        <button class="danger" onclick="cancelSession()">Cancel Session</button>
+      </div>
+    </div>
+
+    <!-- Retry panel (shown for failed/cancelled) -->
+    <div class="assist-panel" id="retry-panel" style="display:none">
+      <h3>Session Failed</h3>
+      <div id="retry-error"></div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button onclick="retrySession()">Retry Session</button>
+      </div>
+    </div>
+
+    <!-- Human assist panel -->
+    <div class="assist-panel" id="assist-panel" style="display:none">
+      <h3>Agent Needs Help</h3>
+      <div id="assist-context"></div>
+      <div class="form-group" style="margin-top:12px">
+        <textarea id="assist-guidance" placeholder="Provide guidance..."></textarea>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button onclick="sendAssist()">Resume with Guidance</button>
+        <button class="danger" onclick="cancelSession()">Cancel Session</button>
+      </div>
+    </div>
+
+    <!-- Panels -->
+    <div class="panel">
+      <div class="panel-header" onclick="togglePanel('events')">Event Stream</div>
+      <div class="panel-body" id="events-panel">
+        <div class="event-stream" id="event-stream"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header" onclick="togglePanel('tests')">Test Results</div>
+      <div class="panel-body" id="tests-panel"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header" onclick="togglePanel('confidence')">Confidence Summary</div>
+      <div class="panel-body collapsed" id="confidence-panel"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header" onclick="togglePanel('pr')">Pull Request</div>
+      <div class="panel-body collapsed" id="pr-panel"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header" onclick="togglePanel('trace')">Trace Timeline</div>
+      <div class="panel-body" id="trace-panel">
+        <div class="trace-timeline" id="trace-timeline"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header" onclick="togglePanel('agent-replay')">Agent Replay</div>
+      <div class="panel-body collapsed" id="agent-replay-panel"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=3"></script>
+  <script>
+    const sessionId = new URLSearchParams(location.search).get('id');
+    if (sessionId) { loadSessionDetail(sessionId); connectSSE(sessionId); }
+  </script>
+</body>
+</html>

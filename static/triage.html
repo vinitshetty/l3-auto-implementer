@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hydra - Triage Queue</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <nav>
+    <span class="logo">Hydra</span>
+    <a href="/static/index.html">Sessions</a>
+    <a href="/static/triage.html" class="active">Triage Queue</a>
+    <a href="/static/index.html#metrics">Metrics</a>
+  </nav>
+
+  <div class="container">
+    <div class="filter-tabs">
+      <button class="active" onclick="filterTriage('all', this)">All</button>
+      <button onclick="filterTriage('auto_assign', this)">Auto-Assigned</button>
+      <button onclick="filterTriage('needs_review', this)">Needs Review</button>
+      <button onclick="filterTriage('not_eligible', this)">Not Eligible</button>
+    </div>
+    <div id="triage-list"></div>
+  </div>
+
+  <script src="/static/app.js"></script>
+  <script>loadTriage();</script>
+</body>
+</html>

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hydra Demo</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <nav>
+    <span class="logo">Hydra</span>
+    <a href="/static/index.html" class="active">Sessions</a>
+    <a href="/static/triage.html">Triage Queue</a>
+    <a href="#" onclick="showMetrics()">Metrics</a>
+  </nav>
+
+  <div class="container">
+    <!-- Create Session Form -->
+    <div class="card" id="create-form">
+      <div class="card-header"><span class="card-title">New Session</span></div>
+      <form onsubmit="createSession(event)">
+        <div class="form-group">
+          <label>Repo URL</label>
+          <input type="url" id="repo_url" required placeholder="https://github.com/owner/repo">
+        </div>
+        <div class="form-group">
+          <label>Task Description</label>
+          <textarea id="task_description" required placeholder="Describe what needs to be done..."></textarea>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+          <div class="form-group">
+            <label>Issue # (optional)</label>
+            <input type="number" id="issue_number" placeholder="#42" oninput="previewIssue()">
+          </div>
+          <div class="form-group">
+            <label>Type</label>
+            <select id="issue_type">
+              <option value="">Auto-detect</option>
+              <option value="bug">Bug Fix</option>
+              <option value="feature">New Feature</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Max Iterations</label>
+            <input type="number" id="max_iterations" value="3" min="1" max="10">
+          </div>
+        </div>
+        <div id="issue-preview" style="display:none;margin-bottom:12px;color:var(--text-secondary);font-size:12px"></div>
+        <button type="submit">Create Session</button>
+      </form>
+    </div>
+
+    <!-- Filter tabs -->
+    <div class="filter-tabs">
+      <button class="active" onclick="filterSessions('all', this)">All</button>
+      <button onclick="filterSessions('running', this)">Running</button>
+      <button onclick="filterSessions('needs_human', this)">Needs Human</button>
+      <button onclick="filterSessions('pr_review', this)">PR Review</button>
+      <button onclick="filterSessions('completed', this)">Completed</button>
+      <button onclick="filterSessions('failed', this)">Failed</button>
+    </div>
+
+    <!-- Session list -->
+    <div class="session-list" id="session-list"></div>
+
+    <!-- Metrics panel (hidden by default) -->
+    <div id="metrics-panel" style="display:none"></div>
+  </div>
+
+  <script src="/static/app.js?v=3"></script>
+  <script>loadSessions();</script>
+</body>
+</html>
