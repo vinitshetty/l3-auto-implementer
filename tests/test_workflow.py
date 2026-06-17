@@ -106,6 +106,9 @@ def _make_activity_mocks(test_results_sequence=None):
         "app.workflows.hydra_session.generate_confidence_summary": AsyncMock(side_effect=mock_confidence),
         "app.workflows.hydra_session.commit_and_push": AsyncMock(side_effect=mock_commit),
         "app.workflows.hydra_session.open_pr": AsyncMock(side_effect=mock_open_pr),
+        "app.workflows.hydra_session.enhance_spec": AsyncMock(return_value="Enhanced spec for testing"),
+        "app.workflows.hydra_session.document_changes": AsyncMock(return_value="# Changes\n- Test changes"),
+        "app.workflows.hydra_session.update_pr_body": AsyncMock(return_value=None),
         "app.workflows.hydra_session.destroy_sandbox": AsyncMock(side_effect=mock_destroy),
     }
 

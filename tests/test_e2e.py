@@ -52,6 +52,9 @@ def _make_patches(test_results_fn=None):
         )),
         "app.workflows.hydra_session.commit_and_push": AsyncMock(return_value=None),
         "app.workflows.hydra_session.open_pr": AsyncMock(return_value="https://github.com/test/repo/pull/1"),
+        "app.workflows.hydra_session.enhance_spec": AsyncMock(return_value="Enhanced: Fix the login bug with proper error handling"),
+        "app.workflows.hydra_session.document_changes": AsyncMock(return_value="# Changes\n- Fixed login bug"),
+        "app.workflows.hydra_session.update_pr_body": AsyncMock(return_value=None),
         "app.workflows.hydra_session.destroy_sandbox": destroy_mock,
         "app.workflows.hydra_session.workflow.wait_condition": AsyncMock(side_effect=_mock_wait_condition),
     }

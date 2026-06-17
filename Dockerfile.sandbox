@@ -10,6 +10,9 @@ RUN pip install --no-cache-dir \
     pytest-json-report \
     mistral-vibe
 
+# Install Vibe CLI skills into the container
+COPY skills/ /root/.vibe/skills/
+
 WORKDIR /workspace
 
 CMD ["sleep", "infinity"]

@@ -238,6 +238,24 @@ class GitHubClient:
             ],
         }
 
+    async def update_pull_request(
+        self, owner: str, repo: str, pr_number: int,
+        title: str | None = None, body: str | None = None,
+        tracer: Tracer | None = None, parent_span: Span | None = None,
+    ) -> dict:
+        payload = {}
+        if title is not None:
+            payload["title"] = title
+        if body is not None:
+            payload["body"] = body
+        resp = await self._request(
+            "PATCH", f"/repos/{owner}/{repo}/pulls/{pr_number}",
+            tracer=tracer, parent_span=parent_span,
+            json=payload,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     async def close(self):
         if self._client:
             await self._client.aclose()

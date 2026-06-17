@@ -86,6 +86,32 @@ class BuildPromptParams(BaseModel):
     triage_files: list[str] | None = None
 
 
+class EnhanceSpecParams(BaseModel):
+    container_id: str
+    task_description: str
+    issue_title: str | None = None
+    issue_body: str | None = None
+    issue_type: str | None = None
+    issue_labels: list[str] | None = None
+    max_turns: int = 30
+    max_price: float = 3.0
+
+
+class DocumentChangesParams(BaseModel):
+    container_id: str
+    task_description: str
+    issue_number: int | None = None
+    max_turns: int = 20
+    max_price: float = 2.0
+
+
+class UpdatePRBodyParams(BaseModel):
+    owner: str
+    repo: str
+    pr_number: int
+    body: str
+
+
 # --- Activities ---
 
 @activity(start_to_close_timeout=timedelta(minutes=2), name="fetch_issue")
@@ -290,10 +316,80 @@ async def destroy_sandbox(params: DestroyParams) -> None:
     await sandbox.destroy(params.container_id)
 
 
+@activity(start_to_close_timeout=timedelta(minutes=10), name="enhance_spec")
+async def enhance_spec(params: EnhanceSpecParams) -> str:
+    """Run /enhance-spec skill via Vibe CLI to produce a detailed spec from raw requirements.
+    Returns the enhanced spec text."""
+    from app.sandbox.manager import SandboxManager
+    sandbox = SandboxManager()
+
+    # Build the prompt that triggers the enhance-spec skill
+    parts = ["/enhance-spec"]
+    if params.issue_title:
+        type_label = "Bug" if params.issue_type == "bug" else "Feature"
+        parts.append(f"{type_label}: {params.issue_title}")
+    if params.issue_body:
+        parts.append(f"Details: {params.issue_body}")
+    if params.issue_labels:
+        parts.append(f"Labels: {', '.join(params.issue_labels)}")
+    parts.append(f"Task: {params.task_description}")
+    parts.append("Write the enhanced spec to /workspace/SPEC.md")
+
+    prompt = "\n\n".join(parts)
+    await sandbox.run_vibe(params.container_id, prompt, params.max_turns, params.max_price)
+
+    # Read the generated spec
+    result = await sandbox.exec_in_container(
+        params.container_id, "cat /workspace/SPEC.md"
+    )
+    if result.exit_code == 0 and result.stdout.strip():
+        return result.stdout.strip()
+    return params.task_description
+
+
+@activity(start_to_close_timeout=timedelta(minutes=10), name="document_changes")
+async def document_changes(params: DocumentChangesParams) -> str:
+    """Run /document-changes skill via Vibe CLI to generate PR documentation.
+    Returns the generated CHANGES.md content."""
+    from app.sandbox.manager import SandboxManager
+    sandbox = SandboxManager()
+
+    parts = ["/document-changes"]
+    parts.append(f"Original task: {params.task_description}")
+    if params.issue_number:
+        parts.append(f"This change addresses issue #{params.issue_number}")
+    parts.append("Generate /workspace/CHANGES.md with full change documentation.")
+
+    prompt = "\n\n".join(parts)
+    await sandbox.run_vibe(params.container_id, prompt, params.max_turns, params.max_price)
+
+    result = await sandbox.exec_in_container(
+        params.container_id, "cat /workspace/CHANGES.md"
+    )
+    if result.exit_code == 0 and result.stdout.strip():
+        return result.stdout.strip()
+    return ""
+
+
+@activity(start_to_close_timeout=timedelta(minutes=2), name="update_pr_body")
+async def update_pr_body(params: UpdatePRBodyParams) -> None:
+    """Update an existing PR's body with change documentation."""
+    from app.integrations.github_client import GitHubClient
+    client = GitHubClient(token=settings.github_token)
+    try:
+        await client.update_pull_request(params.owner, params.repo, params.pr_number, body=params.body)
+    finally:
+        await client.close()
+
+
 def build_prompt(params: BuildPromptParams) -> str:
     """Build the agent prompt from task + issue + triage context.
-    Pure function — not an activity (no side effects, deterministic)."""
-    parts = ["CHANGE TASK — You MUST edit or create files to complete this task. Do NOT just investigate."]
+    Pure function — not an activity (no side effects, deterministic).
+    Uses /tdd-implement skill to enforce test-driven development."""
+    parts = [
+        "/tdd-implement",
+        "CHANGE TASK — You MUST edit or create files to complete this task using TDD. Do NOT just investigate.",
+    ]
 
     if params.issue_title:
         type_action = "fix this bug" if params.issue_type == "bug" else "implement this feature"
@@ -312,6 +408,7 @@ def build_prompt(params: BuildPromptParams) -> str:
     if params.triage_files:
         parts.append(f"Relevant files: {', '.join(params.triage_files)}")
 
+    parts.append("Follow TDD: Write failing tests FIRST, then implement code to make them pass, then refactor.")
     parts.append("Remember: You must make actual code changes. Create or modify files as needed.")
 
     return "\n\n".join(parts)
