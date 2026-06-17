@@ -29,6 +29,22 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# --- Helper to query live state from Mistral Temporal ---
+
+async def _query_live_state(workflow_run_id: str) -> dict | None:
+    """Query workflow state from Mistral's Temporal server."""
+    try:
+        result = await workflow_registry.query_workflow(
+            workflow_run_id, "get_status"
+        )
+        if result and hasattr(result, 'output'):
+            return result.output
+        return result
+    except Exception as e:
+        logger.debug("Query workflow %s failed: %s", workflow_run_id, e)
+        return None
+
+
 # --- Sessions ---
 
 @router.post("/sessions", response_model=SessionResponse)
@@ -44,7 +60,7 @@ async def create_session(req: CreateSessionRequest, db: AsyncSession = Depends(g
     await db.commit()
     await db.refresh(session)
 
-    # Start the session workflow as a background task
+    # Start the session workflow on Mistral's Temporal server
     try:
         from app.workflows.hydra_session import HydraSessionWorkflow, SessionInput
 
@@ -87,15 +103,15 @@ async def list_sessions(
     result = await db.execute(stmt)
     sessions = list(result.scalars().all())
 
-    # Enrich with live workflow state
+    # Enrich with live workflow state from Temporal
     for session in sessions:
         if session.workflow_run_id:
-            wf = workflow_registry.get_workflow(session.workflow_run_id)
-            if wf and hasattr(wf, 'state'):
-                session.status = wf.state.status
-                session.branch_name = wf.state.branch_name
-                session.pr_url = wf.state.pr_url
-                session.iteration_count = wf.state.iteration
+            state = await _query_live_state(session.workflow_run_id)
+            if state and isinstance(state, dict):
+                session.status = state.get("status", session.status)
+                session.branch_name = state.get("branch_name", session.branch_name)
+                session.pr_url = state.get("pr_url", session.pr_url)
+                session.iteration_count = state.get("iteration", session.iteration_count)
 
     return sessions
 
@@ -106,18 +122,18 @@ async def get_session(session_id: str, db: AsyncSession = Depends(get_db)):
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # Enrich with live workflow state if running
+    # Enrich with live workflow state from Temporal
     if session.workflow_run_id:
-        wf = workflow_registry.get_workflow(session.workflow_run_id)
-        if wf and hasattr(wf, 'state'):
-            session.status = wf.state.status
-            session.branch_name = wf.state.branch_name
-            session.pr_url = wf.state.pr_url
-            session.pr_merged = wf.state.pr_merged
-            session.iteration_count = wf.state.iteration
-            session.error_summary = wf.state.error_summary
-            session.issue_title = wf.state.issue_title
-            session.issue_type = wf.state.issue_type
+        state = await _query_live_state(session.workflow_run_id)
+        if state and isinstance(state, dict):
+            session.status = state.get("status", session.status)
+            session.branch_name = state.get("branch_name", session.branch_name)
+            session.pr_url = state.get("pr_url", session.pr_url)
+            session.pr_merged = state.get("pr_merged", session.pr_merged)
+            session.iteration_count = state.get("iteration", session.iteration_count)
+            session.error_summary = state.get("error_summary", session.error_summary)
+            session.issue_title = state.get("issue_title", session.issue_title)
+            session.issue_type = state.get("issue_type", session.issue_type)
 
     return session
 
@@ -130,23 +146,9 @@ async def get_session_live(session_id: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Session not found")
 
     if session.workflow_run_id:
-        wf = workflow_registry.get_workflow(session.workflow_run_id)
-        if wf and hasattr(wf, 'state'):
-            return {
-                "status": wf.state.status,
-                "iteration": wf.state.iteration,
-                "max_iterations": wf.state.max_iterations,
-                "branch_name": wf.state.branch_name,
-                "pr_url": wf.state.pr_url,
-                "issue_title": wf.state.issue_title,
-                "issue_type": wf.state.issue_type,
-                "error_summary": wf.state.error_summary,
-                "test_results": wf.state.test_results.model_dump() if wf.state.test_results else None,
-                "confidence": wf.state.confidence.model_dump() if wf.state.confidence else None,
-                "ci_results": [c.model_dump() for c in wf.state.ci_results],
-                "human_assists": wf.state.human_assists,
-                "review_comments": wf.state.review_comments,
-            }
+        state = await _query_live_state(session.workflow_run_id)
+        if state and isinstance(state, dict):
+            return state
 
     return {"status": session.status, "iteration": session.iteration_count}
 
@@ -160,10 +162,11 @@ async def assist_session(session_id: str, req: AssistRequest, db: AsyncSession =
         raise HTTPException(status_code=400, detail="Session is not awaiting human assistance")
 
     if session.workflow_run_id:
-        wf = workflow_registry.get_workflow(session.workflow_run_id)
-        if wf:
-            from app.workflows.hydra_session import HumanAssistData
-            await wf.signal_human_assist(HumanAssistData(guidance=req.guidance))
+        await workflow_registry.signal_workflow(
+            session.workflow_run_id,
+            "human_assist",
+            {"guidance": req.guidance},
+        )
 
     return {"status": "signal_sent", "session_id": session_id}
 
@@ -182,7 +185,7 @@ async def retry_session(session_id: str, db: AsyncSession = Depends(get_db)):
     session.iteration_count = 0
     await db.commit()
 
-    # Start a new workflow
+    # Start a new workflow on Temporal
     try:
         from app.workflows.hydra_session import HydraSessionWorkflow, SessionInput
 
@@ -217,43 +220,35 @@ async def retry_session(session_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("/sessions/{session_id}/signal/ci")
 async def signal_ci(session_id: str, conclusion: str = "success", db: AsyncSession = Depends(get_db)):
-    """Send a CI result signal to a running workflow (for testing without webhooks)."""
+    """Send a CI result signal to a running workflow on Temporal."""
     session = await db.get(HydraSession, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     if not session.workflow_run_id:
         raise HTTPException(status_code=400, detail="No workflow running")
 
-    wf = workflow_registry.get_workflow(session.workflow_run_id)
-    if not wf:
-        raise HTTPException(status_code=400, detail="Workflow not found in registry")
-
-    from app.workflows.hydra_session import CISignalData
-    from app.schemas import CIResultPayload
-    await wf.signal_ci_result(CISignalData(payload=CIResultPayload(
-        check_name="manual", status="completed", conclusion=conclusion,
-    )))
+    await workflow_registry.signal_workflow(
+        session.workflow_run_id,
+        "ci_result",
+        {"payload": {"check_name": "manual", "status": "completed", "conclusion": conclusion}},
+    )
     return {"status": "signal_sent", "conclusion": conclusion}
 
 
 @router.post("/sessions/{session_id}/signal/review")
 async def signal_review(session_id: str, body: dict, db: AsyncSession = Depends(get_db)):
-    """Send a PR review signal to a running workflow (for polling without webhooks)."""
+    """Send a PR review signal to a running workflow on Temporal."""
     session = await db.get(HydraSession, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     if not session.workflow_run_id:
         raise HTTPException(status_code=400, detail="No workflow running")
 
-    wf = workflow_registry.get_workflow(session.workflow_run_id)
-    if not wf:
-        raise HTTPException(status_code=400, detail="Workflow not found in registry")
-
-    from app.workflows.hydra_session import ReviewFeedbackData
-    await wf.signal_review_feedback(ReviewFeedbackData(
-        action=body.get("action", "commented"),
-        comments=body.get("comments", []),
-    ))
+    await workflow_registry.signal_workflow(
+        session.workflow_run_id,
+        "review_feedback",
+        {"action": body.get("action", "commented"), "comments": body.get("comments", [])},
+    )
     return {"status": "signal_sent", "action": body.get("action")}
 
 
@@ -264,9 +259,10 @@ async def cancel_session(session_id: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Session not found")
 
     if session.workflow_run_id:
-        wf = workflow_registry.get_workflow(session.workflow_run_id)
-        if wf:
-            await wf.signal_cancel()
+        await workflow_registry.signal_workflow(
+            session.workflow_run_id,
+            "cancel",
+        )
 
     return {"status": "cancel_sent", "session_id": session_id}
 

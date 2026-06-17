@@ -3,7 +3,6 @@
 Uses Mistral Workflows SDK (@workflow.define) for durability, signals,
 queries, and activity execution. Backed by Temporal under the hood."""
 
-import asyncio
 from datetime import timedelta
 
 from pydantic import BaseModel, Field
@@ -12,17 +11,8 @@ from mistralai.workflows import workflow, get_execution_id
 
 
 async def _wait_condition(predicate, timeout: timedelta | None = None):
-    """Wait for a condition, using workflow.wait_condition inside Temporal
-    or polling fallback when running locally."""
-    try:
-        await workflow.wait_condition(predicate, timeout=timeout)
-    except Exception:
-        # Outside Temporal — poll
-        deadline = asyncio.get_event_loop().time() + (timeout.total_seconds() if timeout else 3600)
-        while not predicate():
-            if asyncio.get_event_loop().time() > deadline:
-                raise TimeoutError("wait_condition timed out")
-            await asyncio.sleep(0.1)
+    """Wait for a condition using Mistral's hosted Temporal via workflow.wait_condition."""
+    await workflow.wait_condition(predicate, timeout=timeout)
 
 from app.schemas import (
     CIResultPayload,
@@ -35,21 +25,27 @@ from app.workflows.activities import (
     CommitAndPushParams,
     ConfidenceParams,
     DestroyParams,
+    DocumentChangesParams,
+    EnhanceSpecParams,
     FetchIssueParams,
     OpenPRParams,
     ProvisionSandboxParams,
     RunTestsParams,
     RunVibeParams,
+    UpdatePRBodyParams,
     build_prompt,
     clone_repo,
     commit_and_push,
     destroy_sandbox,
+    document_changes,
+    enhance_spec,
     fetch_issue,
     generate_confidence_summary,
     open_pr,
     provision_sandbox,
     run_tests,
     run_vibe_code,
+    update_pr_body,
 )
 
 import logging
@@ -140,6 +136,9 @@ class WorkflowState(BaseModel):
     issue_title: str | None = None
     issue_body: str | None = None
     issue_labels: list[str] = Field(default_factory=list)
+    enhanced_spec: str | None = None
+    change_docs: str | None = None
+    pr_number: int | None = None
 
 
 # --- Signal payloads ---
@@ -232,9 +231,15 @@ class HydraSessionWorkflow:
         await self._phase_setup(input)
         await _emit_event(input.session_id, "span_end", "setup")
 
-        # Build prompt (deterministic, runs in workflow)
+        # -- SKILL 1: Enhance Spec --
+        await _emit_event(input.session_id, "span_start", "enhance_spec")
+        await self._phase_enhance_spec(input)
+        await _emit_event(input.session_id, "span_end", "enhance_spec")
+
+        # Build prompt using enhanced spec (with TDD skill invocation)
+        spec_task = self.state.enhanced_spec or input.task_description
         prompt = build_prompt(BuildPromptParams(
-            task=input.task_description,
+            task=spec_task,
             issue_title=self.state.issue_title,
             issue_body=self.state.issue_body,
             issue_type=self.state.issue_type,
@@ -243,7 +248,7 @@ class HydraSessionWorkflow:
             triage_files=self.state.triage_relevant_files,
         ))
 
-        # -- Phase 1: Initial coding --
+        # -- SKILL 2: TDD Implementation (coding with /tdd-implement skill) --
         await _emit_event(input.session_id, "span_start", "coding")
         await self._phase_code_and_test(input, prompt)
         await _emit_event(input.session_id, "span_end", "coding")
@@ -261,6 +266,11 @@ class HydraSessionWorkflow:
 
         if not self.state.pr_url:
             return await self._cleanup("failed", failure_reason="pr_creation_failed", session_id=input.session_id)
+
+        # -- SKILL 3: Document Changes & attach to PR --
+        await _emit_event(input.session_id, "span_start", "document_changes")
+        await self._phase_document_changes(input)
+        await _emit_event(input.session_id, "span_end", "document_changes")
 
         await _sync_to_db(input.session_id, "ci_monitoring",
                           pr_url=self.state.pr_url, branch_name=branch_name,
@@ -338,6 +348,63 @@ class HydraSessionWorkflow:
                 token=input.github_token,
             ))
 
+    async def _phase_enhance_spec(self, input: SessionInput):
+        """SKILL 1: Use /enhance-spec to turn raw requirements into a detailed spec."""
+        if not self.state.container_id:
+            return
+        try:
+            self.state.enhanced_spec = await enhance_spec(EnhanceSpecParams(
+                container_id=self.state.container_id,
+                task_description=input.task_description,
+                issue_title=self.state.issue_title,
+                issue_body=self.state.issue_body,
+                issue_type=self.state.issue_type,
+                issue_labels=self.state.issue_labels,
+            ))
+            await _emit_event(input.session_id, "agent_message", "Spec enhanced via /enhance-spec skill")
+            logger.info("Enhanced spec generated (%d chars)", len(self.state.enhanced_spec))
+        except Exception as e:
+            logger.warning("enhance_spec failed, using raw task: %s", e)
+            self.state.enhanced_spec = input.task_description
+
+    async def _phase_document_changes(self, input: SessionInput):
+        """SKILL 3: Use /document-changes to generate docs and attach to PR."""
+        if not self.state.container_id or not self.state.pr_url:
+            return
+        try:
+            self.state.change_docs = await document_changes(DocumentChangesParams(
+                container_id=self.state.container_id,
+                task_description=input.task_description,
+                issue_number=self.state.issue_number,
+            ))
+            if self.state.change_docs and self.state.pr_number:
+                # Update the PR body with the generated documentation
+                pr_body_parts = []
+                if self.state.issue_number:
+                    action = "Fixes" if self.state.issue_type == "bug" else "Implements"
+                    pr_body_parts.append(f"{action} #{self.state.issue_number}")
+                if self.state.confidence:
+                    pr_body_parts.append(f"\n{self.state.confidence.summary}")
+                pr_body_parts.append("\n---\n")
+                pr_body_parts.append(self.state.change_docs)
+
+                await update_pr_body(UpdatePRBodyParams(
+                    owner=input.owner,
+                    repo=input.repo,
+                    pr_number=self.state.pr_number,
+                    body="\n\n".join(pr_body_parts),
+                ))
+                # Commit CHANGES.md to the branch
+                await commit_and_push(CommitAndPushParams(
+                    container_id=self.state.container_id,
+                    branch_name=self.state.branch_name,
+                    message="hydra: add change documentation",
+                ))
+                await _emit_event(input.session_id, "agent_message", "Change docs attached to PR via /document-changes skill")
+            logger.info("Change documentation generated (%d chars)", len(self.state.change_docs or ""))
+        except Exception as e:
+            logger.warning("document_changes failed: %s", e)
+
     async def _phase_code_and_test(self, input: SessionInput, prompt: str):
         if not self.state.container_id:
             return
@@ -397,11 +464,18 @@ class HydraSessionWorkflow:
         if self.state.confidence:
             pr_body_parts.append(f"\n{self.state.confidence.summary}")
 
-        self.state.pr_url = await open_pr(OpenPRParams(
+        pr_result = await open_pr(OpenPRParams(
             owner=input.owner, repo=input.repo, branch_name=branch_name,
             title=f"hydra: {input.task_description[:60]}",
             body="\n\n".join(pr_body_parts),
         ))
+        # open_pr returns a PR URL string; extract PR number from it
+        self.state.pr_url = pr_result
+        if pr_result:
+            try:
+                self.state.pr_number = int(pr_result.rstrip("/").split("/")[-1])
+            except (ValueError, IndexError):
+                pass
 
     async def _phase_ci_iteration(
         self, input: SessionInput, branch_name: str, prompt: str,

@@ -106,15 +106,15 @@ async def _handle_ci_completed(payload: dict, db: AsyncSession) -> dict:
         return {"status": "no_matching_session", "branch": head_branch}
 
     if session.workflow_run_id:
-        wf = workflow_registry.get_workflow(session.workflow_run_id)
-        if wf:
-            from app.workflows.hydra_session import CISignalData
-            from app.schemas import CIResultPayload
-            await wf.signal_ci_result(CISignalData(payload=CIResultPayload(
-                check_name=check.get("name", check.get("app", {}).get("name", "CI")),
-                status="completed",
-                conclusion=check.get("conclusion", ""),
-            )))
+        await workflow_registry.signal_workflow(
+            session.workflow_run_id,
+            "ci_result",
+            {"payload": {
+                "check_name": check.get("name", check.get("app", {}).get("name", "CI")),
+                "status": "completed",
+                "conclusion": check.get("conclusion", ""),
+            }},
+        )
 
     return {
         "status": "ci_signal_queued",
@@ -144,10 +144,11 @@ async def _handle_pr_review(payload: dict, db: AsyncSession) -> dict:
         comments = [{"author": review.get("user", {}).get("login", ""), "body": review.get("body", "")}]
 
     if session.workflow_run_id:
-        wf = workflow_registry.get_workflow(session.workflow_run_id)
-        if wf:
-            from app.workflows.hydra_session import ReviewFeedbackData
-            await wf.signal_review_feedback(ReviewFeedbackData(action=action, comments=comments))
+        await workflow_registry.signal_workflow(
+            session.workflow_run_id,
+            "review_feedback",
+            {"action": action, "comments": comments},
+        )
 
     return {
         "status": "review_signal_queued",
