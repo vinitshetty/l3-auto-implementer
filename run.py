@@ -12,6 +12,50 @@ import subprocess
 import sys
 import signal
 import os
+import sqlite3
+
+# Load .env into real environment so Mistral Workflows SDK picks up
+# BUILD_ID, DEPLOYMENT_NAME, MISTRAL_API_KEY, etc.
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"), override=False)
+
+
+def kill_existing_processes(port: int):
+    """Kill any existing processes listening on the given port."""
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f":{port}"],
+            capture_output=True, text=True
+        )
+        pids = result.stdout.strip().split("\n")
+        for pid in pids:
+            if pid:
+                print(f"  Killing existing process {pid} on port {port}")
+                os.kill(int(pid), signal.SIGKILL)
+    except Exception:
+        pass
+
+
+def mark_stale_sessions_as_error(db_path: str):
+    """Mark all pending/running/ci_monitoring/pr_review sessions as 'error'."""
+    if not os.path.exists(db_path):
+        return
+
+    stale_statuses = ("pending", "running", "ci_monitoring", "pr_review", "needs_human", "changes_requested")
+    placeholders = ",".join("?" for _ in stale_statuses)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.execute(
+            f"UPDATE hydra_sessions SET status = 'error' WHERE status IN ({placeholders})",
+            stale_statuses,
+        )
+        if cursor.rowcount > 0:
+            print(f"  Marked {cursor.rowcount} stale session(s) as 'error'")
+        conn.commit()
+    finally:
+        conn.close()
+
 
 def main():
     import argparse
@@ -26,6 +70,15 @@ def main():
 
     print(f"\n  Hydra Demo")
     print(f"  ----------")
+
+    # Kill existing processes on the port
+    kill_existing_processes(args.port)
+
+    # Mark stale sessions as error in the database
+    project_dir = os.path.dirname(os.path.abspath(__file__))
+    db_path = os.path.join(project_dir, "hydra.db")
+    mark_stale_sessions_as_error(db_path)
+
     print(f"  UI:  {url}")
     print(f"  API: http://{args.host}:{args.port}/api")
     if not args.no_poll:
@@ -38,7 +91,7 @@ def main():
     server = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "app.main:app",
          "--host", args.host, "--port", str(args.port)],
-        cwd=os.path.dirname(os.path.abspath(__file__)),
+        cwd=project_dir,
     )
     procs.append(server)
 
@@ -47,7 +100,7 @@ def main():
     if not args.no_poll:
         poller = subprocess.Popen(
             [sys.executable, "scripts/poll_github.py", "--interval", str(args.poll)],
-            cwd=os.path.dirname(os.path.abspath(__file__)),
+            cwd=project_dir,
         )
         procs.append(poller)
 

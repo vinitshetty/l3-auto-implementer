@@ -281,12 +281,20 @@ class SandboxManager:
     ) -> dict:
         import re
 
-        # Stage all changes first so new files are included in diff
+        # Stage all changes so new files are included
         await self.exec_in_container(
             container_id, "git -C /workspace add -A", tracer, parent_span
         )
+        # Find the base commit (merge-base with main/master) to capture
+        # all changes including any Vibe auto-commits
+        base_result = await self.exec_in_container(
+            container_id,
+            "sh -c 'cd /workspace && git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD origin/master 2>/dev/null || git rev-list --max-parents=0 HEAD'",
+            tracer, parent_span,
+        )
+        base_ref = base_result.stdout.strip().splitlines()[0] if base_result.stdout.strip() else "HEAD"
         result = await self.exec_in_container(
-            container_id, "git -C /workspace diff --cached --stat HEAD", tracer, parent_span
+            container_id, f"git -C /workspace diff --stat {base_ref}", tracer, parent_span
         )
         lines = result.stdout.strip().splitlines()
         files_changed = 0

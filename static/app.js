@@ -74,12 +74,21 @@ async function previewIssue() {
 // --- Session detail ---
 
 async function loadSessionDetail(id) {
-  // Fetch session, live state, and trace in parallel
+  // Fetch session (skip Temporal enrichment), live state, and trace in parallel
   const [s, live, trace] = await Promise.all([
-    api(`/sessions/${id}`),
+    api(`/sessions/${id}?enrich=false`),
     api(`/sessions/${id}/live`).catch(() => null),
     api(`/sessions/${id}/trace`).catch(() => null),
   ]);
+
+  // Merge live state into session data so UI reflects current workflow state
+  if (live && typeof live === 'object') {
+    if (live.status) s.status = live.status;
+    if (live.branch_name) s.branch_name = live.branch_name;
+    if (live.pr_url) s.pr_url = live.pr_url;
+    if (live.iteration !== undefined) s.iteration_count = live.iteration;
+    if (live.error_summary) s.error_summary = live.error_summary;
+  }
 
   document.getElementById('session-title').textContent = s.task_description;
   document.getElementById('session-status').className = `badge status-${s.status}`;

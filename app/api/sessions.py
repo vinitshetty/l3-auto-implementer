@@ -92,6 +92,9 @@ async def create_session(req: CreateSessionRequest, db: AsyncSession = Depends(g
     return session
 
 
+_TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
+
+
 @router.get("/sessions", response_model=list[SessionResponse])
 async def list_sessions(
     status: str | None = Query(None),
@@ -101,29 +104,21 @@ async def list_sessions(
     if status:
         stmt = stmt.where(HydraSession.status == status)
     result = await db.execute(stmt)
-    sessions = list(result.scalars().all())
-
-    # Enrich with live workflow state from Temporal
-    for session in sessions:
-        if session.workflow_run_id:
-            state = await _query_live_state(session.workflow_run_id)
-            if state and isinstance(state, dict):
-                session.status = state.get("status", session.status)
-                session.branch_name = state.get("branch_name", session.branch_name)
-                session.pr_url = state.get("pr_url", session.pr_url)
-                session.iteration_count = state.get("iteration", session.iteration_count)
-
-    return sessions
+    return list(result.scalars().all())
 
 
 @router.get("/sessions/{session_id}", response_model=SessionResponse)
-async def get_session(session_id: str, db: AsyncSession = Depends(get_db)):
+async def get_session(
+    session_id: str,
+    enrich: bool = Query(True),
+    db: AsyncSession = Depends(get_db),
+):
     session = await db.get(HydraSession, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # Enrich with live workflow state from Temporal
-    if session.workflow_run_id:
+    # Enrich with live workflow state from Temporal (skip when caller uses /live separately)
+    if enrich and session.workflow_run_id and session.status not in _TERMINAL_STATUSES:
         state = await _query_live_state(session.workflow_run_id)
         if state and isinstance(state, dict):
             session.status = state.get("status", session.status)
@@ -134,6 +129,9 @@ async def get_session(session_id: str, db: AsyncSession = Depends(get_db)):
             session.error_summary = state.get("error_summary", session.error_summary)
             session.issue_title = state.get("issue_title", session.issue_title)
             session.issue_type = state.get("issue_type", session.issue_type)
+            # Persist terminal state to DB
+            if session.status in _TERMINAL_STATUSES:
+                await db.commit()
 
     return session
 
@@ -145,7 +143,7 @@ async def get_session_live(session_id: str, db: AsyncSession = Depends(get_db)):
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    if session.workflow_run_id:
+    if session.workflow_run_id and session.status not in _TERMINAL_STATUSES:
         state = await _query_live_state(session.workflow_run_id)
         if state and isinstance(state, dict):
             return state

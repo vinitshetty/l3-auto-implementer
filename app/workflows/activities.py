@@ -56,6 +56,7 @@ class ConfidenceParams(BaseModel):
     container_id: str
     task_description: str = ""
     issue_type: str = ""
+    test_results: TestResultPayload | None = None
 
 
 class CommitAndPushParams(BaseModel):
@@ -112,7 +113,65 @@ class UpdatePRBodyParams(BaseModel):
     body: str
 
 
+class UpdateSessionStatusParams(BaseModel):
+    session_id: str
+    status: str
+    message: str = ""
+    branch_name: str | None = None
+    pr_url: str | None = None
+    error_summary: str | None = None
+    iteration_count: int | None = None
+    issue_title: str | None = None
+    issue_type: str | None = None
+    pr_merged: bool | None = None
+
+
 # --- Activities ---
+
+@activity(start_to_close_timeout=timedelta(seconds=10), name="update_session_status")
+async def update_session_status(params: UpdateSessionStatusParams) -> None:
+    """Persist workflow state to DB and emit SSE event."""
+    from app.database import async_session
+    from app.models import HydraSession, SessionEvent
+    async with async_session() as db:
+        session = await db.get(HydraSession, params.session_id)
+        if session:
+            session.status = params.status
+            for field in ("branch_name", "pr_url", "error_summary", "iteration_count",
+                          "issue_title", "issue_type", "pr_merged"):
+                val = getattr(params, field)
+                if val is not None:
+                    setattr(session, field, val)
+        # Build rich payload with all available metadata
+        payload = {"message": params.message or params.status, "status": params.status}
+        if params.branch_name:
+            payload["branch_name"] = params.branch_name
+        if params.pr_url:
+            payload["pr_url"] = params.pr_url
+        if params.iteration_count is not None:
+            payload["iteration"] = params.iteration_count
+        if params.error_summary:
+            payload["error_summary"] = params.error_summary
+        if params.issue_title:
+            payload["issue_title"] = params.issue_title
+
+        event = SessionEvent(
+            session_id=params.session_id,
+            event_type="status_change",
+            payload=payload,
+        )
+        db.add(event)
+        await db.commit()
+
+    try:
+        from app.event_bus import event_bus
+        await event_bus.publish(params.session_id, {
+            "event_type": "status_change",
+            "payload": payload,
+        })
+    except Exception:
+        pass
+
 
 @activity(start_to_close_timeout=timedelta(minutes=2), name="fetch_issue")
 async def fetch_issue(params: FetchIssueParams) -> IssueContext:
@@ -201,8 +260,14 @@ async def generate_confidence_summary(params: ConfidenceParams) -> ConfidenceSum
 
     # --- Detect new dependencies from diff ---
     try:
+        # Use same base ref approach as get_diff_stats
+        base_result = await sandbox.exec_in_container(
+            params.container_id,
+            "sh -c 'cd /workspace && git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD origin/master 2>/dev/null || git rev-list --max-parents=0 HEAD'",
+        )
+        base_ref = base_result.stdout.strip().splitlines()[0] if base_result.stdout.strip() else "HEAD"
         diff_result = await sandbox.exec_in_container(
-            params.container_id, "git -C /workspace diff HEAD -- requirements*.txt package.json pyproject.toml Pipfile"
+            params.container_id, f"git -C /workspace diff {base_ref} -- requirements*.txt package.json pyproject.toml Pipfile"
         )
         for line in diff_result.stdout.splitlines():
             if line.startswith("+") and not line.startswith("+++"):
@@ -212,19 +277,23 @@ async def generate_confidence_summary(params: ConfidenceParams) -> ConfidenceSum
     except Exception:
         pass
 
-    # --- Check if tests exist for changed files ---
+    # --- Check test coverage ---
     has_test_coverage = False
-    try:
-        result = await sandbox.exec_in_container(
-            params.container_id, "find /workspace -name 'test_*' -o -name '*_test.*' | head -20"
-        )
-        test_files = [f.strip() for f in result.stdout.splitlines() if f.strip()]
-        if test_files:
-            has_test_coverage = True
-        else:
-            risk_flags.append("No test files found in repo")
-    except Exception:
-        pass
+    if params.test_results and params.test_results.total > 0:
+        has_test_coverage = True
+    else:
+        try:
+            result = await sandbox.exec_in_container(
+                params.container_id,
+                "find /workspace -name 'test_*' -o -name '*_test.*' -o -name '*.test.*' -o -name '*_spec.*' -o -name '*.spec.*' -o -type d -name tests -o -type d -name __tests__ | head -20"
+            )
+            test_files = [f.strip() for f in result.stdout.splitlines() if f.strip()]
+            if test_files:
+                has_test_coverage = True
+        except Exception:
+            pass
+    if not has_test_coverage:
+        risk_flags.append("No test files found in repo")
 
     # --- Scope check: large change warning ---
     if files_changed > 10:
@@ -318,24 +387,36 @@ async def destroy_sandbox(params: DestroyParams) -> None:
 
 @activity(start_to_close_timeout=timedelta(minutes=10), name="enhance_spec")
 async def enhance_spec(params: EnhanceSpecParams) -> str:
-    """Run /enhance-spec skill via Vibe CLI to produce a detailed spec from raw requirements.
+    """Analyze the codebase and produce a detailed implementation spec.
     Returns the enhanced spec text."""
     from app.sandbox.manager import SandboxManager
     sandbox = SandboxManager()
 
-    # Build the prompt that triggers the enhance-spec skill
-    parts = ["/enhance-spec"]
+    # Build a concrete prompt for Vibe CLI (no custom skill prefixes)
+    parts = [
+        "CHANGE TASK — You MUST create the file /workspace/SPEC.md with a detailed implementation spec.",
+        "",
+        "Analyze the codebase in /workspace and write a detailed spec for the following task:",
+    ]
     if params.issue_title:
-        type_label = "Bug" if params.issue_type == "bug" else "Feature"
+        type_label = "Bug fix" if params.issue_type == "bug" else "Feature"
         parts.append(f"{type_label}: {params.issue_title}")
     if params.issue_body:
-        parts.append(f"Details: {params.issue_body}")
+        parts.append(f"Description: {params.issue_body}")
     if params.issue_labels:
         parts.append(f"Labels: {', '.join(params.issue_labels)}")
-    parts.append(f"Task: {params.task_description}")
-    parts.append("Write the enhanced spec to /workspace/SPEC.md")
+    if params.task_description and params.task_description != params.issue_title:
+        parts.append(f"Additional context: {params.task_description}")
+    parts.append("")
+    parts.append("Your SPEC.md must include:")
+    parts.append("1. Which files need to be modified or created")
+    parts.append("2. What specific changes to make in each file")
+    parts.append("3. Any new dependencies or imports needed")
+    parts.append("4. Edge cases to handle")
+    parts.append("")
+    parts.append("Write the spec to /workspace/SPEC.md. Do NOT implement the changes yet, only write the spec.")
 
-    prompt = "\n\n".join(parts)
+    prompt = "\n".join(parts)
     await sandbox.run_vibe(params.container_id, prompt, params.max_turns, params.max_price)
 
     # Read the generated spec
@@ -344,21 +425,34 @@ async def enhance_spec(params: EnhanceSpecParams) -> str:
     )
     if result.exit_code == 0 and result.stdout.strip():
         return result.stdout.strip()
+    # Fallback: use issue title+body as a better spec than raw task_description
+    if params.issue_title:
+        fallback = params.issue_title
+        if params.issue_body and params.issue_body != params.issue_title:
+            fallback += f"\n\n{params.issue_body}"
+        return fallback
     return params.task_description
 
 
 @activity(start_to_close_timeout=timedelta(minutes=10), name="document_changes")
 async def document_changes(params: DocumentChangesParams) -> str:
-    """Run /document-changes skill via Vibe CLI to generate PR documentation.
+    """Generate PR documentation via Vibe CLI.
     Returns the generated CHANGES.md content."""
     from app.sandbox.manager import SandboxManager
     sandbox = SandboxManager()
 
-    parts = ["/document-changes"]
-    parts.append(f"Original task: {params.task_description}")
+    parts = [
+        "CHANGE TASK — You MUST create the file /workspace/CHANGES.md documenting all changes made.",
+        "",
+        f"Original task: {params.task_description}",
+    ]
     if params.issue_number:
         parts.append(f"This change addresses issue #{params.issue_number}")
-    parts.append("Generate /workspace/CHANGES.md with full change documentation.")
+    parts.append("")
+    parts.append("Run `git diff` to see what was changed, then write /workspace/CHANGES.md with:")
+    parts.append("- Summary of changes")
+    parts.append("- Files modified and why")
+    parts.append("- Testing notes")
 
     prompt = "\n\n".join(parts)
     await sandbox.run_vibe(params.container_id, prompt, params.max_turns, params.max_price)

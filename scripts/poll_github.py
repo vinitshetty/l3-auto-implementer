@@ -31,7 +31,7 @@ def get_github_headers():
 
 def get_sessions():
     """Get all active sessions from the Hydra API."""
-    resp = httpx.get(f"{API_BASE}/api/sessions")
+    resp = httpx.get(f"{API_BASE}/api/sessions", timeout=30)
     resp.raise_for_status()
     return resp.json()
 
@@ -39,7 +39,7 @@ def get_sessions():
 def get_live_state(session_id: str) -> dict | None:
     """Get live workflow state."""
     try:
-        resp = httpx.get(f"{API_BASE}/api/sessions/{session_id}/live")
+        resp = httpx.get(f"{API_BASE}/api/sessions/{session_id}/live", timeout=30)
         if resp.status_code == 200:
             return resp.json()
     except Exception:
@@ -63,6 +63,7 @@ def check_ci_status(session: dict, live: dict):
     resp = httpx.get(
         f"https://api.github.com/repos/{owner}/{repo}/commits/{branch}/check-runs",
         headers=get_github_headers(),
+        timeout=30,
     )
     if resp.status_code != 200:
         return
@@ -73,6 +74,7 @@ def check_ci_status(session: dict, live: dict):
         resp2 = httpx.get(
             f"https://api.github.com/repos/{owner}/{repo}/commits/{branch}/status",
             headers=get_github_headers(),
+            timeout=30,
         )
         if resp2.status_code == 200:
             status = resp2.json()
@@ -120,6 +122,7 @@ def check_pr_reviews(session: dict, live: dict):
     resp = httpx.get(
         f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/reviews",
         headers=get_github_headers(),
+        timeout=30,
     )
     if resp.status_code != 200:
         return
@@ -144,6 +147,7 @@ def send_ci_signal(session_id: str, conclusion: str):
         resp = httpx.post(
             f"{API_BASE}/api/sessions/{session_id}/signal/ci",
             params={"conclusion": conclusion},
+            timeout=30,
         )
         print(f"    -> CI signal sent: {resp.json()}")
     except Exception as e:
@@ -163,6 +167,7 @@ def send_review_signal(session_id: str, action: str, review: dict):
         resp = httpx.post(
             f"{API_BASE}/api/sessions/{session_id}/signal/review",
             json={"action": action, "comments": comments},
+            timeout=30,
         )
         print(f"    -> Review signal sent: {resp.json()}")
     except Exception as e:
@@ -184,6 +189,7 @@ def check_pr_comments(session: dict, live: dict):
     resp = httpx.get(
         f"https://api.github.com/repos/{owner}/{repo}/issues/{pr_number}/comments",
         headers=get_github_headers(),
+        timeout=30,
     )
     if resp.status_code != 200:
         return
@@ -213,7 +219,8 @@ def check_pr_comments(session: dict, live: dict):
 def poll_once():
     """Single poll iteration."""
     sessions = get_sessions()
-    active = [s for s in sessions if s.get("workflow_run_id")]
+    terminal = {"completed", "failed", "cancelled", "error"}
+    active = [s for s in sessions if s.get("workflow_run_id") and s.get("status") not in terminal]
 
     if not active:
         return

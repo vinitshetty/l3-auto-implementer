@@ -12,8 +12,9 @@ from pydantic import BaseModel, Field
 
 from mistralai.workflows import workflow, activity, Depends
 
-from app import workflow_registry
-from app.workflows.triage_functions import TOOLS_SCHEMA, TriageTools
+with workflow.unsafe.imports_passed_through():
+    from app import workflow_registry
+    from app.workflows.triage_functions import TOOLS_SCHEMA, TriageTools
 
 
 TRIAGE_SYSTEM_PROMPT = """You are a triage agent for a software project. Analyze the GitHub issue and determine:

@@ -14,83 +14,45 @@ async def _wait_condition(predicate, timeout: timedelta | None = None):
     """Wait for a condition using Mistral's hosted Temporal via workflow.wait_condition."""
     await workflow.wait_condition(predicate, timeout=timeout)
 
-from app.schemas import (
-    CIResultPayload,
-    ConfidenceSummary,
-    TestResultPayload,
-)
-from app.workflows.activities import (
-    BuildPromptParams,
-    CloneRepoParams,
-    CommitAndPushParams,
-    ConfidenceParams,
-    DestroyParams,
-    DocumentChangesParams,
-    EnhanceSpecParams,
-    FetchIssueParams,
-    OpenPRParams,
-    ProvisionSandboxParams,
-    RunTestsParams,
-    RunVibeParams,
-    UpdatePRBodyParams,
-    build_prompt,
-    clone_repo,
-    commit_and_push,
-    destroy_sandbox,
-    document_changes,
-    enhance_spec,
-    fetch_issue,
-    generate_confidence_summary,
-    open_pr,
-    provision_sandbox,
-    run_tests,
-    run_vibe_code,
-    update_pr_body,
-)
+with workflow.unsafe.imports_passed_through():
+    from app.schemas import (
+        CIResultPayload,
+        ConfidenceSummary,
+        TestResultPayload,
+    )
+    from app.workflows.activities import (
+        BuildPromptParams,
+        CloneRepoParams,
+        CommitAndPushParams,
+        ConfidenceParams,
+        DestroyParams,
+        DocumentChangesParams,
+        EnhanceSpecParams,
+        FetchIssueParams,
+        OpenPRParams,
+        ProvisionSandboxParams,
+        RunTestsParams,
+        RunVibeParams,
+        UpdatePRBodyParams,
+        UpdateSessionStatusParams,
+        build_prompt,
+        clone_repo,
+        commit_and_push,
+        destroy_sandbox,
+        document_changes,
+        enhance_spec,
+        fetch_issue,
+        generate_confidence_summary,
+        open_pr,
+        provision_sandbox,
+        run_tests,
+        run_vibe_code,
+        update_pr_body,
+        update_session_status,
+    )
 
 import logging
 logger = logging.getLogger(__name__)
-
-
-async def _sync_to_db(session_id: str, status: str, **kwargs):
-    """Persist workflow state to DB so it survives restarts."""
-    try:
-        from app.database import async_session
-        from app.models import HydraSession
-        async with async_session() as db:
-            session = await db.get(HydraSession, session_id)
-            if session:
-                session.status = status
-                for key, val in kwargs.items():
-                    if hasattr(session, key) and val is not None:
-                        setattr(session, key, val)
-                await db.commit()
-    except Exception as e:
-        logger.warning("DB sync failed: %s", e)
-
-
-async def _emit_event(session_id: str, event_type: str, message: str = ""):
-    """Emit a session event to DB and SSE bus."""
-    payload = {"message": message}
-    try:
-        from app.database import async_session
-        from app.models import SessionEvent
-        async with async_session() as db:
-            event = SessionEvent(
-                session_id=session_id,
-                event_type=event_type,
-                payload=payload,
-            )
-            db.add(event)
-            await db.commit()
-    except Exception as e:
-        logger.warning("Event emit failed: %s", e)
-
-    try:
-        from app.event_bus import event_bus
-        await event_bus.publish(session_id, {"event_type": event_type, "payload": payload})
-    except Exception:
-        pass
 
 
 # --- Workflow input (Pydantic model for SDK serialization) ---
@@ -223,20 +185,21 @@ class HydraSessionWorkflow:
         branch_name = f"hydra/{input.session_id[:8]}"
         self.state.branch_name = branch_name
 
-        await _sync_to_db(input.session_id, "running", branch_name=branch_name)
-        await _emit_event(input.session_id, "status_change", "running")
+        await update_session_status(UpdateSessionStatusParams(
+            session_id=input.session_id, status="running",
+            branch_name=branch_name,
+            issue_title=input.issue_title,
+            issue_type=input.issue_type,
+            message=f"Starting workflow on branch {branch_name} for: {input.task_description[:100]}",
+        ))
 
         # -- Phase 0: Setup --
-        await _emit_event(input.session_id, "span_start", "setup")
         await self._phase_setup(input)
-        await _emit_event(input.session_id, "span_end", "setup")
 
-        # -- SKILL 1: Enhance Spec --
-        await _emit_event(input.session_id, "span_start", "enhance_spec")
+        # -- Phase 1: Enhance Spec --
         await self._phase_enhance_spec(input)
-        await _emit_event(input.session_id, "span_end", "enhance_spec")
 
-        # Build prompt using enhanced spec (with TDD skill invocation)
+        # Build prompt using enhanced spec
         spec_task = self.state.enhanced_spec or input.task_description
         prompt = build_prompt(BuildPromptParams(
             task=spec_task,
@@ -248,18 +211,14 @@ class HydraSessionWorkflow:
             triage_files=self.state.triage_relevant_files,
         ))
 
-        # -- SKILL 2: TDD Implementation (coding with /tdd-implement skill) --
-        await _emit_event(input.session_id, "span_start", "coding")
+        # -- Phase 2: Code and Test --
         await self._phase_code_and_test(input, prompt)
-        await _emit_event(input.session_id, "span_end", "coding")
 
         if self._cancelled:
             return await self._cleanup("cancelled", session_id=input.session_id)
 
-        # -- Phase 2: PR creation --
-        await _emit_event(input.session_id, "span_start", "pr_creation")
+        # -- Phase 3: PR creation --
         await self._phase_create_pr(input, branch_name)
-        await _emit_event(input.session_id, "span_end", "pr_creation")
 
         if self.state.error_summary == "no_changes":
             return await self._cleanup("failed", failure_reason="no_changes", session_id=input.session_id)
@@ -267,18 +226,16 @@ class HydraSessionWorkflow:
         if not self.state.pr_url:
             return await self._cleanup("failed", failure_reason="pr_creation_failed", session_id=input.session_id)
 
-        # -- SKILL 3: Document Changes & attach to PR --
-        await _emit_event(input.session_id, "span_start", "document_changes")
+        # -- Phase 4: Document Changes & attach to PR --
         await self._phase_document_changes(input)
-        await _emit_event(input.session_id, "span_end", "document_changes")
 
-        await _sync_to_db(input.session_id, "ci_monitoring",
-                          pr_url=self.state.pr_url, branch_name=branch_name,
-                          iteration_count=1)
-        await _emit_event(input.session_id, "status_change", "ci_monitoring")
-        await _emit_event(input.session_id, "agent_message", f"PR created: {self.state.pr_url}")
+        await update_session_status(UpdateSessionStatusParams(
+            session_id=input.session_id, status="ci_monitoring",
+            pr_url=self.state.pr_url, branch_name=branch_name, iteration_count=1,
+            message=f"PR created: {self.state.pr_url}",
+        ))
 
-        # -- Phase 3: CI monitoring loop --
+        # -- Phase 5: CI monitoring loop --
         self.state.status = "ci_monitoring"
         for i in range(self.state.max_iterations):
             self.state.iteration = i + 1
@@ -292,8 +249,10 @@ class HydraSessionWorkflow:
             elif result == "review_feedback":
                 # Handle review comments received during CI monitoring
                 self.state.status = "running"
-                await _sync_to_db(input.session_id, "running")
-                await _emit_event(input.session_id, "status_change", "addressing review feedback")
+                await update_session_status(UpdateSessionStatusParams(
+                    session_id=input.session_id, status="running",
+                    message="Addressing review feedback",
+                ))
                 feedback = "\n".join(
                     f"- {c.get('author', '?')}: {c.get('body', '')}"
                     for c in self.state.review_comments
@@ -306,6 +265,7 @@ class HydraSessionWorkflow:
                     container_id=self.state.container_id,
                     task_description=input.task_description,
                     issue_type=input.issue_type or "",
+                    test_results=self.state.test_results,
                 ))
                 await commit_and_push(CommitAndPushParams(
                     container_id=self.state.container_id,
@@ -315,9 +275,11 @@ class HydraSessionWorkflow:
                 self.state.review_comments = []
                 self._review_received = False
                 self.state.status = "ci_monitoring"
-                await _sync_to_db(input.session_id, "ci_monitoring",
-                                  iteration_count=self.state.iteration)
-                await _emit_event(input.session_id, "status_change", "ci_monitoring")
+                await update_session_status(UpdateSessionStatusParams(
+                    session_id=input.session_id, status="ci_monitoring",
+                    iteration_count=self.state.iteration,
+                    message=f"Pushed review fixes, waiting for CI (iteration {self.state.iteration}/{self.state.max_iterations})",
+                ))
                 continue
             elif result == "continue":
                 continue
@@ -348,8 +310,15 @@ class HydraSessionWorkflow:
                 token=input.github_token,
             ))
 
+        issue_info = f" — Issue #{self.state.issue_number}: {self.state.issue_title}" if self.state.issue_number else ""
+        await update_session_status(UpdateSessionStatusParams(
+            session_id=input.session_id, status="running",
+            issue_title=self.state.issue_title, issue_type=self.state.issue_type,
+            message=f"Sandbox ready, cloned {input.repo_url} on branch {self.state.branch_name}{issue_info}",
+        ))
+
     async def _phase_enhance_spec(self, input: SessionInput):
-        """SKILL 1: Use /enhance-spec to turn raw requirements into a detailed spec."""
+        """Analyze codebase and produce a detailed implementation spec."""
         if not self.state.container_id:
             return
         try:
@@ -361,14 +330,13 @@ class HydraSessionWorkflow:
                 issue_type=self.state.issue_type,
                 issue_labels=self.state.issue_labels,
             ))
-            await _emit_event(input.session_id, "agent_message", "Spec enhanced via /enhance-spec skill")
             logger.info("Enhanced spec generated (%d chars)", len(self.state.enhanced_spec))
         except Exception as e:
             logger.warning("enhance_spec failed, using raw task: %s", e)
             self.state.enhanced_spec = input.task_description
 
     async def _phase_document_changes(self, input: SessionInput):
-        """SKILL 3: Use /document-changes to generate docs and attach to PR."""
+        """Generate change documentation and attach to PR."""
         if not self.state.container_id or not self.state.pr_url:
             return
         try:
@@ -378,7 +346,6 @@ class HydraSessionWorkflow:
                 issue_number=self.state.issue_number,
             ))
             if self.state.change_docs and self.state.pr_number:
-                # Update the PR body with the generated documentation
                 pr_body_parts = []
                 if self.state.issue_number:
                     action = "Fixes" if self.state.issue_type == "bug" else "Implements"
@@ -394,13 +361,11 @@ class HydraSessionWorkflow:
                     pr_number=self.state.pr_number,
                     body="\n\n".join(pr_body_parts),
                 ))
-                # Commit CHANGES.md to the branch
                 await commit_and_push(CommitAndPushParams(
                     container_id=self.state.container_id,
                     branch_name=self.state.branch_name,
                     message="hydra: add change documentation",
                 ))
-                await _emit_event(input.session_id, "agent_message", "Change docs attached to PR via /document-changes skill")
             logger.info("Change documentation generated (%d chars)", len(self.state.change_docs or ""))
         except Exception as e:
             logger.warning("document_changes failed: %s", e)
@@ -433,6 +398,14 @@ class HydraSessionWorkflow:
                 container_id=self.state.container_id,
             ))
 
+        # Report coding + test results
+        tr = self.state.test_results
+        test_msg = f"Tests: {tr.passed}/{tr.total} passed, {tr.failed} failed" if tr else "No tests run"
+        await update_session_status(UpdateSessionStatusParams(
+            session_id=input.session_id, status="running",
+            message=f"Coding complete ({vibe_result.files_modified} files modified, {vibe_result.turns} turns). {test_msg}",
+        ))
+
     async def _phase_create_pr(self, input: SessionInput, branch_name: str):
         if not self.state.container_id:
             return
@@ -441,6 +414,7 @@ class HydraSessionWorkflow:
             container_id=self.state.container_id,
             task_description=input.task_description,
             issue_type=input.issue_type or "",
+            test_results=self.state.test_results,
         ))
         logger.info("Confidence: files_changed=%s",
                      self.state.confidence.files_changed if self.state.confidence else "N/A")
@@ -469,7 +443,6 @@ class HydraSessionWorkflow:
             title=f"hydra: {input.task_description[:60]}",
             body="\n\n".join(pr_body_parts),
         ))
-        # open_pr returns a PR URL string; extract PR number from it
         self.state.pr_url = pr_result
         if pr_result:
             try:
@@ -477,11 +450,18 @@ class HydraSessionWorkflow:
             except (ValueError, IndexError):
                 pass
 
+        conf = self.state.confidence
+        conf_msg = f"Confidence: {conf.confidence_score}/100, {conf.files_changed} files (+{conf.lines_added}/-{conf.lines_removed})" if conf else ""
+        await update_session_status(UpdateSessionStatusParams(
+            session_id=input.session_id, status="running",
+            pr_url=self.state.pr_url,
+            message=f"PR #{self.state.pr_number} created: {self.state.pr_url}. {conf_msg}",
+        ))
+
     async def _phase_ci_iteration(
         self, input: SessionInput, branch_name: str, prompt: str,
     ) -> str:
         """Returns 'completed', 'cancelled', 'review_feedback', or 'continue'."""
-        # Wait for CI result, review feedback, or cancellation
         self._ci_received = False
         await _wait_condition(
             lambda: self._ci_received or self._review_received or self._cancelled,
@@ -491,7 +471,6 @@ class HydraSessionWorkflow:
         if self._cancelled:
             return "cancelled"
 
-        # Review feedback received during CI monitoring — treat as changes_requested
         if self._review_received and not self._ci_received:
             return "review_feedback"
 
@@ -502,7 +481,6 @@ class HydraSessionWorkflow:
         ci_passed = latest_ci.conclusion == "success"
 
         if ci_passed:
-            # PR review phase
             self.state.status = "pr_review"
             result = await self._phase_pr_review(input, branch_name)
             return result
@@ -526,10 +504,8 @@ class HydraSessionWorkflow:
         ))
 
         if self.state.test_results and self.state.test_results.failed > 0:
-            # Agent stuck — ask human
             return await self._request_human_help(input, branch_name)
 
-        # Tests pass locally, push and wait for CI again
         await commit_and_push(CommitAndPushParams(
             container_id=self.state.container_id,
             branch_name=branch_name,
@@ -551,7 +527,6 @@ class HydraSessionWorkflow:
             return "cancelled"
 
         if self.state.review_comments:
-            # Changes requested — re-code
             feedback = "\n".join(c.get("body", "") for c in self.state.review_comments)
             self.state.status = "running"
 
@@ -574,7 +549,6 @@ class HydraSessionWorkflow:
             self.state.status = "ci_monitoring"
             return "continue"
 
-        # PR approved
         return "completed"
 
     async def _request_human_help(
@@ -624,12 +598,22 @@ class HydraSessionWorkflow:
             ))
 
         if session_id:
-            await _sync_to_db(session_id, final_status,
-                              error_summary=failure_reason,
-                              pr_url=self.state.pr_url,
-                              branch_name=self.state.branch_name,
-                              iteration_count=self.state.iteration)
-            await _emit_event(session_id, "status_change", final_status)
+            parts = [f"Workflow {final_status}"]
+            if self.state.pr_url:
+                parts.append(f"PR: {self.state.pr_url}")
+            if failure_reason:
+                parts.append(f"Reason: {failure_reason}")
+            if self.state.iteration > 0:
+                parts.append(f"After {self.state.iteration} iteration(s)")
+
+            await update_session_status(UpdateSessionStatusParams(
+                session_id=session_id, status=final_status,
+                error_summary=failure_reason,
+                pr_url=self.state.pr_url,
+                branch_name=self.state.branch_name,
+                iteration_count=self.state.iteration,
+                message=" | ".join(parts),
+            ))
 
         return self.state
 

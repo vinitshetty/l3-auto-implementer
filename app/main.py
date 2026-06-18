@@ -13,24 +13,28 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    # Start Mistral Workflows worker — connects to Mistral's Temporal server,
-    # your laptop acts as the worker node executing activities locally
-    worker_task = None
-    if os.environ.get("MISTRAL_API_KEY"):
+    # Start Mistral Workflows worker in background so it doesn't block server startup
+    import asyncio
+    import logging
+    _logger = logging.getLogger(__name__)
+
+    async def _start_worker():
+        if not os.environ.get("MISTRAL_API_KEY"):
+            return
         try:
             from mistralai.workflows import run_worker
             from app.workflows.hydra_session import HydraSessionWorkflow
             from app.workflows.triage import TriageWorkflow
-            import logging
-            logging.getLogger(__name__).info("Starting Mistral Workflows worker...")
-            worker_task = await run_worker(
+            _logger.info("Starting Mistral Workflows worker...")
+            await run_worker(
                 workflows=[HydraSessionWorkflow, TriageWorkflow],
                 detach=True,
             )
-            logging.getLogger(__name__).info("Mistral Workflows worker started")
+            _logger.info("Mistral Workflows worker started")
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).error("Worker failed to start: %s", e, exc_info=True)
+            _logger.error("Worker failed to start: %s", e, exc_info=True)
+
+    asyncio.create_task(_start_worker())
 
     yield
 
