@@ -135,11 +135,10 @@ def main():
     # Clean up orphaned Docker containers from previous runs
     cleanup_docker_containers()
 
-    # Cancel running workflows and clear all old sessions
+    # Cancel running workflows (but keep DB history)
     project_dir = os.path.dirname(os.path.abspath(__file__))
     db_path = os.path.join(project_dir, "hydra.db")
     cancel_running_workflows(db_path)
-    clear_all_sessions(db_path)
 
     print(f"  UI:  {url}")
     print(f"  API: http://{args.host}:{args.port}/api")
