@@ -500,25 +500,29 @@ async def get_session_metrics(session_id: str, db: AsyncSession = Depends(get_db
 
 @router.get("/metrics/summary", response_model=MetricsSummary)
 async def get_metrics_summary(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(SessionMetrics))
-    all_metrics = list(result.scalars().all())
-
-    if not all_metrics:
-        return MetricsSummary()
-
-    completed = sum(1 for m in all_metrics if m.outcome == "completed")
-    failed = sum(1 for m in all_metrics if m.outcome == "failed")
-    cancelled = sum(1 for m in all_metrics if m.outcome == "cancelled")
-    total = len(all_metrics)
-
-    failure_reasons = Counter(m.failure_reason for m in all_metrics if m.failure_reason)
-
+    # Use HydraSession as source of truth for counts (SessionMetrics may not exist for all sessions)
     session_result = await db.execute(select(HydraSession))
     sessions = list(session_result.scalars().all())
+
+    total = len(sessions)
+    if not total:
+        return MetricsSummary()
+
+    completed = sum(1 for s in sessions if s.status == "completed")
+    failed = sum(1 for s in sessions if s.status == "failed")
+    cancelled = sum(1 for s in sessions if s.status == "cancelled")
+
     day_counts: dict[str, int] = {}
     for s in sessions:
         day = s.created_at.strftime("%Y-%m-%d")
         day_counts[day] = day_counts.get(day, 0) + 1
+
+    # Use SessionMetrics for detailed timing/token data when available
+    result = await db.execute(select(SessionMetrics))
+    all_metrics = list(result.scalars().all())
+
+    failure_reasons = Counter(m.failure_reason for m in all_metrics if m.failure_reason)
+    metrics_count = len(all_metrics) or 1  # avoid division by zero
 
     return MetricsSummary(
         total_sessions=total,
@@ -526,10 +530,10 @@ async def get_metrics_summary(db: AsyncSession = Depends(get_db)):
         failed=failed,
         cancelled=cancelled,
         success_rate=round(completed / total * 100, 1) if total else 0.0,
-        avg_iterations=round(sum(m.iterations for m in all_metrics) / total, 1),
-        avg_duration_ms=round(sum(m.total_duration_ms for m in all_metrics) / total, 1),
-        avg_coding_ms=round(sum(m.coding_duration_ms for m in all_metrics) / total, 1),
-        avg_ci_wait_ms=round(sum(m.ci_wait_duration_ms for m in all_metrics) / total, 1),
+        avg_iterations=round(sum(s.iteration_count for s in sessions) / total, 1),
+        avg_duration_ms=round(sum(m.total_duration_ms for m in all_metrics) / metrics_count, 1) if all_metrics else 0.0,
+        avg_coding_ms=round(sum(m.coding_duration_ms for m in all_metrics) / metrics_count, 1) if all_metrics else 0.0,
+        avg_ci_wait_ms=round(sum(m.ci_wait_duration_ms for m in all_metrics) / metrics_count, 1) if all_metrics else 0.0,
         common_failure_reasons=[
             FailureReasonCount(reason=r, count=c) for r, c in failure_reasons.most_common()
         ],
