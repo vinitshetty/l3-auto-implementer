@@ -124,6 +124,8 @@ class UpdateSessionStatusParams(BaseModel):
     issue_title: str | None = None
     issue_type: str | None = None
     pr_merged: bool | None = None
+    test_results: TestResultPayload | None = None
+    confidence: ConfidenceSummary | None = None
 
 
 # --- Activities ---
@@ -142,6 +144,10 @@ async def update_session_status(params: UpdateSessionStatusParams) -> None:
                 val = getattr(params, field)
                 if val is not None:
                     setattr(session, field, val)
+            if params.test_results is not None:
+                session.test_results_json = params.test_results.model_dump()
+            if params.confidence is not None:
+                session.confidence_json = params.confidence.model_dump()
         # Build rich payload with all available metadata
         payload = {"message": params.message or params.status, "status": params.status}
         if params.branch_name:
@@ -154,6 +160,10 @@ async def update_session_status(params: UpdateSessionStatusParams) -> None:
             payload["error_summary"] = params.error_summary
         if params.issue_title:
             payload["issue_title"] = params.issue_title
+        if params.test_results is not None:
+            payload["test_results"] = params.test_results.model_dump()
+        if params.confidence is not None:
+            payload["confidence"] = params.confidence.model_dump()
 
         event = SessionEvent(
             session_id=params.session_id,

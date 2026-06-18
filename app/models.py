@@ -54,6 +54,8 @@ class HydraSession(Base):
     issue_type: Mapped[str | None] = mapped_column(String, nullable=True)  # bug|feature|null
     issue_title: Mapped[str | None] = mapped_column(String, nullable=True)
     error_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    test_results_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    confidence_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 

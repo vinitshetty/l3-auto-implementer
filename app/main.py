@@ -12,6 +12,16 @@ async def lifespan(app: FastAPI):
     # Create DB tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Add columns that may not exist in older DBs
+        for col in ("test_results_json", "confidence_json"):
+            try:
+                await conn.execute(
+                    __import__("sqlalchemy").text(
+                        f"ALTER TABLE hydra_sessions ADD COLUMN {col} JSON"
+                    )
+                )
+            except Exception:
+                pass  # column already exists
 
     # Start Mistral Workflows worker in background so it doesn't block server startup
     import asyncio

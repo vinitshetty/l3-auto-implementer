@@ -34,14 +34,25 @@ router = APIRouter()
 async def _query_live_state(workflow_run_id: str) -> dict | None:
     """Query workflow state from Mistral's Temporal server."""
     try:
-        result = await workflow_registry.query_workflow(
+        response = await workflow_registry.query_workflow(
             workflow_run_id, "get_status"
         )
-        if result and hasattr(result, 'output'):
-            return result.output
-        return result
+        if response is None:
+            return None
+        # SDK returns QueryWorkflowResponse with a 'result' field
+        data = getattr(response, 'result', None) or getattr(response, 'output', None)
+        if data is None:
+            # Try model_dump as fallback
+            data = response.model_dump() if hasattr(response, 'model_dump') else response
+        if isinstance(data, dict):
+            return data
+        # If data is a Pydantic model, convert to dict
+        if hasattr(data, 'model_dump'):
+            return data.model_dump()
+        logger.warning("Unexpected query result type: %s", type(data).__name__)
+        return data
     except Exception as e:
-        logger.debug("Query workflow %s failed: %s", workflow_run_id, e)
+        logger.warning("Query workflow %s failed: %s", workflow_run_id, e)
         return None
 
 
@@ -148,7 +159,22 @@ async def get_session_live(session_id: str, db: AsyncSession = Depends(get_db)):
         if state and isinstance(state, dict):
             return state
 
-    return {"status": session.status, "iteration": session.iteration_count}
+    # Workflow done or unreachable — return persisted data from DB
+    result = {
+        "status": session.status,
+        "iteration": session.iteration_count,
+        "branch_name": session.branch_name,
+        "pr_url": session.pr_url,
+        "pr_merged": session.pr_merged,
+        "error_summary": session.error_summary,
+        "issue_title": session.issue_title,
+        "issue_type": session.issue_type,
+    }
+    if session.test_results_json:
+        result["test_results"] = session.test_results_json
+    if session.confidence_json:
+        result["confidence"] = session.confidence_json
+    return result
 
 
 @router.post("/sessions/{session_id}/assist")

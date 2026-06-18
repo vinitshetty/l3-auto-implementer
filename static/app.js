@@ -112,6 +112,11 @@ async function loadSessionDetail(id) {
       if (ciPanel) ciPanel.style.display = 'block';
     }
 
+    if (live.status === 'pr_review') {
+      const reviewPanel = document.getElementById('review-panel');
+      if (reviewPanel) reviewPanel.style.display = 'block';
+    }
+
     if (live.status === 'failed' || live.status === 'cancelled') {
       const retryPanel = document.getElementById('retry-panel');
       if (retryPanel) {
@@ -126,49 +131,13 @@ async function loadSessionDetail(id) {
     }
 
     // Test results
-    if (live.test_results) {
-      const tp = document.getElementById('tests-panel');
-      if (tp) tp.innerHTML = `
-        <div class="test-summary">
-          <span class="pass">${live.test_results.passed || 0} passed</span>
-          <span class="fail">${live.test_results.failed || 0} failed</span>
-          <span class="skip">${live.test_results.skipped || 0} skipped</span>
-          <span style="color:var(--text-secondary)">(${live.test_results.total} total)</span>
-        </div>
-        ${(live.test_results.failures || []).map(f => `<div style="color:var(--test-fail);font-size:12px;margin-top:4px">${escHtml(f.name)}: ${escHtml(f.error || '')}</div>`).join('')}`;
-    }
+    if (live.test_results) updateTestPanel(live.test_results);
 
     // Confidence
-    if (live.confidence) {
-      const c = live.confidence;
-      const cp = document.getElementById('confidence-panel');
-      if (cp) {
-        cp.classList.remove('collapsed');
-        const scoreColor = c.confidence_score >= 70 ? 'var(--test-pass)' : c.confidence_score >= 40 ? 'var(--status-ci)' : 'var(--test-fail)';
-        cp.innerHTML = `
-          <div style="font-size:13px">
-            <div style="display:flex;align-items:center;gap:16px;margin-bottom:8px">
-              <div style="font-size:24px;font-weight:bold;color:${scoreColor}">${c.confidence_score}/100</div>
-              <div>
-                <div>Files changed: <strong>${c.files_changed}</strong></div>
-                <div>Lines: <span class="pass">+${c.lines_added}</span> / <span class="fail">-${c.lines_removed}</span></div>
-              </div>
-            </div>
-            ${(c.changed_files || []).length ? `<div style="margin-top:6px"><strong>Changed:</strong> ${c.changed_files.map(f => '<code style="font-size:11px;background:rgba(255,255,255,0.1);padding:1px 4px;border-radius:3px">' + escHtml(f) + '</code>').join(' ')}</div>` : ''}
-            ${(c.new_dependencies || []).length ? `<div style="margin-top:4px;color:var(--status-ci)"><strong>New deps:</strong> ${c.new_dependencies.map(d => escHtml(d)).join(', ')}</div>` : ''}
-            ${(c.risk_flags || []).length ? `<div style="margin-top:4px;color:var(--test-fail)"><strong>Risks:</strong> ${c.risk_flags.map(r => escHtml(r)).join(' · ')}</div>` : ''}
-          </div>`;
-      }
-    }
+    if (live.confidence) updateConfidencePanel(live.confidence);
 
     // PR info
-    if (live.pr_url) {
-      const pp = document.getElementById('pr-panel');
-      if (pp) {
-        pp.classList.remove('collapsed');
-        pp.innerHTML = `<a href="${live.pr_url}" target="_blank" style="color:var(--accent)">${live.pr_url}</a>`;
-      }
-    }
+    if (live.pr_url) updatePRPanel(live.pr_url);
   } catch (err) {
     console.error('Live state error:', err);
   }
@@ -189,6 +158,18 @@ async function cancelSession() {
 async function sendCISignal(conclusion) {
   try {
     await api(`/sessions/${sessionId}/signal/ci?conclusion=${conclusion}`, { method: 'POST' });
+    location.reload();
+  } catch (e) {
+    alert('Signal failed: ' + e.message);
+  }
+}
+
+async function sendReviewSignal(action) {
+  try {
+    await api(`/sessions/${sessionId}/signal/review`, {
+      method: 'POST',
+      body: JSON.stringify({ action, comments: [] }),
+    });
     location.reload();
   } catch (e) {
     alert('Signal failed: ' + e.message);
@@ -220,7 +201,30 @@ function connectSSE(id) {
   const stream = document.getElementById('event-stream');
 
   es.onmessage = (e) => appendEvent(stream, JSON.parse(e.data));
-  es.addEventListener('status_change', (e) => appendEvent(stream, JSON.parse(e.data), 'event-status'));
+  es.addEventListener('status_change', (e) => {
+    const data = JSON.parse(e.data);
+    appendEvent(stream, data, 'event-status');
+    // Update status badge and panels in real-time
+    const payload = data.payload || data;
+    const newStatus = payload.status;
+    if (newStatus) {
+      const badge = document.getElementById('session-status');
+      if (badge) { badge.textContent = newStatus; badge.className = `badge status-${newStatus}`; }
+      // Show/hide action panels based on new status
+      const ciPanel = document.getElementById('ci-panel');
+      const reviewPanel = document.getElementById('review-panel');
+      const assistPanel = document.getElementById('assist-panel');
+      const retryPanel = document.getElementById('retry-panel');
+      if (ciPanel) ciPanel.style.display = newStatus === 'ci_monitoring' ? 'block' : 'none';
+      if (reviewPanel) reviewPanel.style.display = newStatus === 'pr_review' ? 'block' : 'none';
+      if (assistPanel) assistPanel.style.display = newStatus === 'needs_human' ? 'block' : 'none';
+      if (retryPanel) retryPanel.style.display = (newStatus === 'failed' || newStatus === 'cancelled') ? 'block' : 'none';
+    }
+    // Update data panels from SSE payload
+    if (payload.test_results) updateTestPanel(payload.test_results);
+    if (payload.confidence) updateConfidencePanel(payload.confidence);
+    if (payload.pr_url) updatePRPanel(payload.pr_url);
+  });
   es.addEventListener('error', (e) => { if (e.data) appendEvent(stream, JSON.parse(e.data), 'event-error'); });
   es.addEventListener('agent_message', (e) => appendEvent(stream, JSON.parse(e.data), 'event-agent'));
   es.addEventListener('human_assist_request', (e) => appendEvent(stream, JSON.parse(e.data), 'event-human'));
@@ -256,6 +260,33 @@ function updateTestPanel(data) {
       <span class="fail">${data.failed || 0} failed</span>
       <span class="skip">${data.skipped || 0} skipped</span>
     </div>`;
+}
+
+function updateConfidencePanel(c) {
+  const cp = document.getElementById('confidence-panel');
+  if (!cp) return;
+  cp.classList.remove('collapsed');
+  const scoreColor = c.confidence_score >= 70 ? 'var(--test-pass)' : c.confidence_score >= 40 ? 'var(--status-ci)' : 'var(--test-fail)';
+  cp.innerHTML = `
+    <div style="font-size:13px">
+      <div style="display:flex;align-items:center;gap:16px;margin-bottom:8px">
+        <div style="font-size:24px;font-weight:bold;color:${scoreColor}">${c.confidence_score}/100</div>
+        <div>
+          <div>Files changed: <strong>${c.files_changed}</strong></div>
+          <div>Lines: <span class="pass">+${c.lines_added}</span> / <span class="fail">-${c.lines_removed}</span></div>
+        </div>
+      </div>
+      ${(c.changed_files || []).length ? `<div style="margin-top:6px"><strong>Changed:</strong> ${c.changed_files.map(f => '<code style="font-size:11px;background:rgba(255,255,255,0.1);padding:1px 4px;border-radius:3px">' + escHtml(f) + '</code>').join(' ')}</div>` : ''}
+      ${(c.new_dependencies || []).length ? `<div style="margin-top:4px;color:var(--status-ci)"><strong>New deps:</strong> ${c.new_dependencies.map(d => escHtml(d)).join(', ')}</div>` : ''}
+      ${(c.risk_flags || []).length ? `<div style="margin-top:4px;color:var(--test-fail)"><strong>Risks:</strong> ${c.risk_flags.map(r => escHtml(r)).join(' · ')}</div>` : ''}
+    </div>`;
+}
+
+function updatePRPanel(prUrl) {
+  const pp = document.getElementById('pr-panel');
+  if (!pp) return;
+  pp.classList.remove('collapsed');
+  pp.innerHTML = `<a href="${prUrl}" target="_blank" style="color:var(--accent)">${prUrl}</a>`;
 }
 
 // --- Trace ---

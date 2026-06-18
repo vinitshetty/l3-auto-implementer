@@ -156,16 +156,20 @@ class HydraSessionWorkflow:
 
     @workflow.signal(name="ci_result", description="CI result signal from webhook")
     async def signal_ci_result(self, data: CISignalData) -> None:
+        logger.info("CI signal received: %s", data)
         self.state.ci_results.append(data.payload)
         self._ci_received = True
+        logger.info("CI signal processed: conclusion=%s", data.payload.conclusion)
 
     @workflow.signal(name="human_assist", description="Human guidance signal")
     async def signal_human_assist(self, data: HumanAssistData) -> None:
+        logger.info("Human assist signal received")
         self.state.human_assists.append(data.guidance)
         self._human_received = True
 
     @workflow.signal(name="review_feedback", description="PR review feedback signal")
     async def signal_review_feedback(self, data: ReviewFeedbackData) -> None:
+        logger.info("Review signal received: action=%s", data.action)
         self.state.review_comments.extend(data.comments)
         self._review_received = True
 
@@ -455,6 +459,8 @@ class HydraSessionWorkflow:
         await update_session_status(UpdateSessionStatusParams(
             session_id=input.session_id, status="running",
             pr_url=self.state.pr_url,
+            test_results=self.state.test_results,
+            confidence=self.state.confidence,
             message=f"PR #{self.state.pr_number} created: {self.state.pr_url}. {conf_msg}",
         ))
 
@@ -463,10 +469,14 @@ class HydraSessionWorkflow:
     ) -> str:
         """Returns 'completed', 'cancelled', 'review_feedback', or 'continue'."""
         self._ci_received = False
+        logger.info("Waiting for CI signal (ci=%s, review=%s, cancel=%s)",
+                     self._ci_received, self._review_received, self._cancelled)
         await _wait_condition(
             lambda: self._ci_received or self._review_received or self._cancelled,
             timeout=timedelta(hours=1),
         )
+        logger.info("Wait condition unblocked: ci=%s, review=%s, cancel=%s",
+                     self._ci_received, self._review_received, self._cancelled)
 
         if self._cancelled:
             return "cancelled"
@@ -476,12 +486,20 @@ class HydraSessionWorkflow:
 
         latest_ci = self.state.ci_results[-1] if self.state.ci_results else None
         if not latest_ci:
+            logger.warning("CI received flag set but no ci_results in state")
             return "continue"
 
         ci_passed = latest_ci.conclusion == "success"
+        logger.info("CI conclusion: %s, passed: %s", latest_ci.conclusion, ci_passed)
 
         if ci_passed:
             self.state.status = "pr_review"
+            await update_session_status(UpdateSessionStatusParams(
+                session_id=input.session_id, status="pr_review",
+                pr_url=self.state.pr_url, branch_name=branch_name,
+                iteration_count=self.state.iteration,
+                message=f"CI passed! Waiting for PR review on {self.state.pr_url}",
+            ))
             result = await self._phase_pr_review(input, branch_name)
             return result
 
@@ -612,6 +630,8 @@ class HydraSessionWorkflow:
                 pr_url=self.state.pr_url,
                 branch_name=self.state.branch_name,
                 iteration_count=self.state.iteration,
+                test_results=self.state.test_results,
+                confidence=self.state.confidence,
                 message=" | ".join(parts),
             ))
 

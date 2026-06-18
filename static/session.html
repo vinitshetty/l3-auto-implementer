@@ -34,6 +34,17 @@
       </div>
     </div>
 
+    <!-- PR review panel (shown for pr_review) -->
+    <div class="assist-panel" id="review-panel" style="display:none">
+      <h3>Waiting for PR Review</h3>
+      <p style="color:var(--text-secondary);font-size:13px">CI passed. Send a manual review signal:</p>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button onclick="sendReviewSignal('approved')" style="background:var(--test-pass)">Approve PR</button>
+        <button onclick="sendReviewSignal('changes_requested')" style="background:var(--status-ci)">Request Changes</button>
+        <button class="danger" onclick="cancelSession()">Cancel Session</button>
+      </div>
+    </div>
+
     <!-- Retry panel (shown for failed/cancelled) -->
     <div class="assist-panel" id="retry-panel" style="display:none">
       <h3>Session Failed</h3>
@@ -92,7 +103,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=4"></script>
+  <script src="/static/app.js?v=7"></script>
   <script>
     const sessionId = new URLSearchParams(location.search).get('id');
     if (sessionId) { loadSessionDetail(sessionId); connectSSE(sessionId); }

@@ -110,6 +110,8 @@ class SessionResponse(BaseModel):
     issue_title: str | None = None
     issue_url: str | None = None
     error_summary: str | None = None
+    test_results_json: dict | None = None
+    confidence_json: dict | None = None
     created_at: datetime
     updated_at: datetime
 
