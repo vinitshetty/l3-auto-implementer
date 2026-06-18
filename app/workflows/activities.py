@@ -3,6 +3,8 @@ Decorated with @activity() for Mistral Workflows SDK.
 Activities construct their own clients from params since the SDK's
 DI cannot auto-construct classes that require init arguments."""
 
+import asyncio
+import logging
 from datetime import timedelta
 
 from pydantic import BaseModel
@@ -11,6 +13,12 @@ from mistralai.workflows import activity
 
 from app.config import settings
 from app.schemas import ConfidenceSummary, TestResultPayload, VibeSummary
+
+logger = logging.getLogger(__name__)
+
+VIBE_TIMEOUT = 300  # 5 minutes — for enhance_spec, document_changes
+VIBE_CODE_TIMEOUT = 480  # 8 minutes — for actual coding (run_vibe_code)
+VIBE_MAX_RETRIES = 1  # 1 retry (2 total attempts) — avoid wasting time on repeated restarts
 
 
 # --- Pydantic models for activity inputs/outputs (must be serializable) ---
@@ -224,10 +232,24 @@ async def clone_repo(params: CloneRepoParams) -> None:
 
 @activity(start_to_close_timeout=timedelta(minutes=10), name="run_vibe_code")
 async def run_vibe_code(params: RunVibeParams) -> VibeSummary:
-    """Run Vibe CLI for coding."""
+    """Run Vibe CLI for coding with timeout + retry."""
     from app.sandbox.manager import SandboxManager
     sandbox = SandboxManager()
-    return await sandbox.run_vibe(params.container_id, params.prompt, params.max_turns, params.max_price)
+    last_err = None
+    for attempt in range(1, VIBE_MAX_RETRIES + 2):
+        try:
+            logger.info("run_vibe_code attempt %d/%d", attempt, VIBE_MAX_RETRIES + 1)
+            return await sandbox.run_vibe(
+                params.container_id, params.prompt, params.max_turns, params.max_price,
+                timeout=VIBE_CODE_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            last_err = f"Vibe CLI timed out after {VIBE_CODE_TIMEOUT}s (attempt {attempt})"
+            logger.warning(last_err)
+            await sandbox.kill_vibe_processes(params.container_id)
+            if attempt > VIBE_MAX_RETRIES:
+                raise TimeoutError(last_err)
+    raise TimeoutError(last_err)
 
 
 @activity(start_to_close_timeout=timedelta(minutes=5), name="run_tests")
@@ -398,7 +420,7 @@ async def destroy_sandbox(params: DestroyParams) -> None:
 @activity(start_to_close_timeout=timedelta(minutes=10), name="enhance_spec")
 async def enhance_spec(params: EnhanceSpecParams) -> str:
     """Analyze the codebase and produce a detailed implementation spec.
-    Returns the enhanced spec text."""
+    Returns the enhanced spec text. Retries on timeout."""
     from app.sandbox.manager import SandboxManager
     sandbox = SandboxManager()
 
@@ -427,7 +449,27 @@ async def enhance_spec(params: EnhanceSpecParams) -> str:
     parts.append("Write the spec to /workspace/SPEC.md. Do NOT implement the changes yet, only write the spec.")
 
     prompt = "\n".join(parts)
-    await sandbox.run_vibe(params.container_id, prompt, params.max_turns, params.max_price)
+    last_err = None
+    for attempt in range(1, VIBE_MAX_RETRIES + 2):
+        try:
+            logger.info("enhance_spec attempt %d/%d", attempt, VIBE_MAX_RETRIES + 1)
+            await sandbox.run_vibe(
+                params.container_id, prompt, params.max_turns, params.max_price,
+                timeout=VIBE_TIMEOUT,
+            )
+            break
+        except asyncio.TimeoutError:
+            last_err = f"enhance_spec timed out after {VIBE_TIMEOUT}s (attempt {attempt})"
+            logger.warning(last_err)
+            await sandbox.kill_vibe_processes(params.container_id)
+            if attempt > VIBE_MAX_RETRIES:
+                logger.warning("enhance_spec exhausted retries, falling back to raw task")
+                if params.issue_title:
+                    fallback = params.issue_title
+                    if params.issue_body and params.issue_body != params.issue_title:
+                        fallback += f"\n\n{params.issue_body}"
+                    return fallback
+                return params.task_description
 
     # Read the generated spec
     result = await sandbox.exec_in_container(
@@ -465,7 +507,20 @@ async def document_changes(params: DocumentChangesParams) -> str:
     parts.append("- Testing notes")
 
     prompt = "\n\n".join(parts)
-    await sandbox.run_vibe(params.container_id, prompt, params.max_turns, params.max_price)
+    for attempt in range(1, VIBE_MAX_RETRIES + 2):
+        try:
+            logger.info("document_changes attempt %d/%d", attempt, VIBE_MAX_RETRIES + 1)
+            await sandbox.run_vibe(
+                params.container_id, prompt, params.max_turns, params.max_price,
+                timeout=VIBE_TIMEOUT,
+            )
+            break
+        except asyncio.TimeoutError:
+            logger.warning("document_changes timed out after %ds (attempt %d)", VIBE_TIMEOUT, attempt)
+            await sandbox.kill_vibe_processes(params.container_id)
+            if attempt > VIBE_MAX_RETRIES:
+                logger.warning("document_changes exhausted retries, skipping")
+                return ""
 
     result = await sandbox.exec_in_container(
         params.container_id, "cat /workspace/CHANGES.md"

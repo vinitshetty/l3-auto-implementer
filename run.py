@@ -36,23 +36,81 @@ def kill_existing_processes(port: int):
         pass
 
 
-def mark_stale_sessions_as_error(db_path: str):
-    """Mark all pending/running/ci_monitoring/pr_review sessions as 'error'."""
+def cleanup_docker_containers():
+    """Kill and remove all orphaned hydra sandbox containers."""
+    try:
+        result = subprocess.run(
+            ["docker", "ps", "-a", "--filter", "label=hydra-session", "--format", "{{.ID}}"],
+            capture_output=True, text=True,
+        )
+        container_ids = [cid for cid in result.stdout.strip().split("\n") if cid]
+        if container_ids:
+            subprocess.run(["docker", "rm", "-f"] + container_ids, capture_output=True)
+            print(f"  Removed {len(container_ids)} orphaned sandbox container(s)")
+    except Exception:
+        pass
+
+
+def cancel_running_workflows(db_path: str):
+    """Cancel any running workflows on Mistral's Temporal server."""
     if not os.path.exists(db_path):
         return
 
-    stale_statuses = ("pending", "running", "ci_monitoring", "pr_review", "needs_human", "changes_requested")
-    placeholders = ",".join("?" for _ in stale_statuses)
+    conn = sqlite3.connect(db_path)
+    try:
+        active_statuses = ("pending", "running", "ci_monitoring", "pr_review", "needs_human", "changes_requested")
+        placeholders = ",".join("?" for _ in active_statuses)
+        rows = conn.execute(
+            f"SELECT id, workflow_run_id FROM hydra_sessions WHERE status IN ({placeholders})",
+            active_statuses,
+        ).fetchall()
+
+        if not rows:
+            return
+
+        # Try to cancel workflows via Mistral API
+        try:
+            from mistralai.client import Mistral
+            api_key = os.environ.get("MISTRAL_API_KEY", "")
+            if api_key:
+                client = Mistral(api_key=api_key)
+                for session_id, workflow_run_id in rows:
+                    exec_id = workflow_run_id or session_id
+                    try:
+                        client.workflows.executions.cancel_workflow_execution(
+                            execution_id=exec_id,
+                        )
+                        print(f"  Cancelled workflow {exec_id}")
+                    except Exception as e:
+                        # Workflow may already be done or not found
+                        pass
+        except ImportError:
+            pass
+
+        print(f"  Attempted cancel on {len(rows)} active workflow(s)")
+    finally:
+        conn.close()
+
+
+def clear_all_sessions(db_path: str):
+    """Delete all sessions and related data from the database."""
+    if not os.path.exists(db_path):
+        return
 
     conn = sqlite3.connect(db_path)
     try:
-        cursor = conn.execute(
-            f"UPDATE hydra_sessions SET status = 'error' WHERE status IN ({placeholders})",
-            stale_statuses,
-        )
-        if cursor.rowcount > 0:
-            print(f"  Marked {cursor.rowcount} stale session(s) as 'error'")
+        # Delete in order respecting foreign keys
+        tables = ["session_events", "session_metrics", "spans", "triage_results", "hydra_sessions"]
+        total = 0
+        for table in tables:
+            try:
+                cursor = conn.execute(f"DELETE FROM {table}")
+                total += cursor.rowcount
+            except Exception:
+                pass
         conn.commit()
+        if total > 0:
+            print(f"  Cleared all old sessions and related data ({total} rows)")
     finally:
         conn.close()
 
@@ -74,10 +132,14 @@ def main():
     # Kill existing processes on the port
     kill_existing_processes(args.port)
 
-    # Mark stale sessions as error in the database
+    # Clean up orphaned Docker containers from previous runs
+    cleanup_docker_containers()
+
+    # Cancel running workflows and clear all old sessions
     project_dir = os.path.dirname(os.path.abspath(__file__))
     db_path = os.path.join(project_dir, "hydra.db")
-    mark_stale_sessions_as_error(db_path)
+    cancel_running_workflows(db_path)
+    clear_all_sessions(db_path)
 
     print(f"  UI:  {url}")
     print(f"  API: http://{args.host}:{args.port}/api")

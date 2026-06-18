@@ -1,9 +1,13 @@
+import asyncio
 import json
+import logging
 from dataclasses import dataclass
 
 from app.models import Span
 from app.observability import Tracer
 from app.schemas import TestResultPayload, TestFailure, VibeSummary
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -29,14 +33,18 @@ class SandboxManager:
     async def exec_in_container(
         self, container_id: str, cmd: str | list[str],
         tracer: Tracer | None = None, parent_span: Span | None = None,
+        timeout: float | None = None,
     ) -> ExecResult:
-        """Single instrumentation point for all container operations."""
+        """Single instrumentation point for all container operations.
+
+        Args:
+            timeout: Max seconds to wait. None = no timeout.
+        """
         cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
 
-        async def _exec():
+        def _exec_sync():
             client = self._get_docker()
             container = client.containers.get(container_id)
-            # Pass lists directly to preserve argument boundaries (e.g. commit messages with spaces)
             exec_cmd = cmd if isinstance(cmd, list) else cmd_str
             result = container.exec_run(exec_cmd, demux=True)
             stdout = (result.output[0] or b"").decode("utf-8", errors="replace") if isinstance(result.output, tuple) else (result.output or b"").decode("utf-8", errors="replace")
@@ -46,6 +54,12 @@ class SandboxManager:
                 stdout=stdout,
                 stderr=stderr,
             )
+
+        async def _exec():
+            coro = asyncio.to_thread(_exec_sync)
+            if timeout:
+                return await asyncio.wait_for(coro, timeout=timeout)
+            return await coro
 
         if tracer and parent_span:
             async with tracer.span("container_exec", kind="container_op", parent=parent_span,
@@ -60,6 +74,21 @@ class SandboxManager:
                 return result
         else:
             return await _exec()
+
+    async def kill_vibe_processes(self, container_id: str):
+        """Kill any running vibe/pytest processes in the container."""
+        def _kill():
+            client = self._get_docker()
+            container = client.containers.get(container_id)
+            # Kill pytest first (child processes that may be hanging)
+            container.exec_run("pkill -9 -f pytest", demux=True)
+            # Then kill vibe processes
+            container.exec_run("pkill -9 -f vibe", demux=True)
+        try:
+            await asyncio.to_thread(_kill)
+            logger.info("Killed stale vibe/pytest processes in %s", container_id[:12])
+        except Exception as e:
+            logger.debug("kill_vibe_processes: %s", e)
 
     async def create(
         self, session_id: str, repo_url: str, token: str, api_key: str,
@@ -93,12 +122,13 @@ class SandboxManager:
     async def run_vibe(
         self, container_id: str, prompt: str, max_turns: int = 50, max_price: float = 5.0,
         tracer: Tracer | None = None, parent_span: Span | None = None,
+        timeout: float | None = None,
     ) -> VibeSummary:
         """Run Vibe CLI in container and parse NDJSON output into trace spans."""
         # Escape quotes in prompt for shell
         safe_prompt = prompt.replace('"', '\\"')
         cmd = f'vibe -p "{safe_prompt}" --workdir /workspace --max-turns {max_turns} --max-price {max_price} --output streaming --trust'
-        result = await self.exec_in_container(container_id, cmd, tracer, parent_span)
+        result = await self.exec_in_container(container_id, cmd, tracer, parent_span, timeout=timeout)
 
         turns = 0
         tool_calls = 0
