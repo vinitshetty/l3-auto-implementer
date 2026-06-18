@@ -52,6 +52,8 @@
 
     <!-- Main content: Session list -->
     <div class="main-content">
+      <div id="metrics-panel" style="display:none"></div>
+
       <div class="filter-tabs">
         <button class="active" onclick="filterSessions('all', this)">All</button>
         <button onclick="filterSessions('running', this)">Running</button>
@@ -62,8 +64,6 @@
       </div>
 
       <div class="session-list" id="session-list"></div>
-
-      <div id="metrics-panel" style="display:none"></div>
     </div>
   </div>
 
