@@ -122,7 +122,20 @@ def main():
     parser.add_argument("--host", default="127.0.0.1", help="Server host (default: 127.0.0.1)")
     parser.add_argument("--poll", type=int, default=5, help="GitHub poll interval in seconds (default: 5)")
     parser.add_argument("--no-poll", action="store_true", help="Don't start the GitHub poller")
+    parser.add_argument("--kill", action="store_true", help="Kill all Hydra processes and exit (no restart)")
     args = parser.parse_args()
+
+    project_dir = os.path.dirname(os.path.abspath(__file__))
+    db_path = os.path.join(project_dir, "hydra.db")
+
+    if args.kill:
+        print(f"\n  Hydra Kill Mode")
+        print(f"  ---------------")
+        kill_existing_processes(args.port)
+        cleanup_docker_containers()
+        cancel_running_workflows(db_path)
+        print(f"  Done. All Hydra processes killed.\n")
+        return
 
     url = f"http://{args.host}:{args.port}/static/index.html"
 
@@ -136,8 +149,6 @@ def main():
     cleanup_docker_containers()
 
     # Cancel running workflows (but keep DB history)
-    project_dir = os.path.dirname(os.path.abspath(__file__))
-    db_path = os.path.join(project_dir, "hydra.db")
     cancel_running_workflows(db_path)
 
     print(f"  UI:  {url}")

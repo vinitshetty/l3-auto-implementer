@@ -7,3 +7,7 @@ hydra.db
 hydra_demo.egg-info/
 .claude/
 hydra.db-wal
+hydra.db-shm
+hydra.db-wal
+hydra.db-shm
+hydra.db-wal
