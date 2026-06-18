@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Hydra - Session Detail</title>
+  <title>Hydra - Session</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <nav>
     <span class="logo">Hydra</span>
     <a href="/static/index.html">Sessions</a>
-    <a href="/static/triage.html">Triage Queue</a>
+    <a href="/static/triage.html">Triage</a>
   </nav>
 
   <div class="container">
@@ -23,32 +23,32 @@
       <div class="card-meta" id="session-meta"></div>
     </div>
 
-    <!-- CI signal panel (shown for ci_monitoring) -->
+    <!-- CI signal panel -->
     <div class="assist-panel" id="ci-panel" style="display:none">
       <h3>Waiting for CI Result</h3>
-      <p style="color:var(--text-secondary);font-size:13px">No webhook configured? Send a manual CI signal:</p>
-      <div style="display:flex;gap:8px;margin-top:8px">
+      <p style="color:var(--text-secondary);font-size:13px;margin-bottom:10px">No webhook configured? Send a manual CI signal:</p>
+      <div style="display:flex;gap:8px">
         <button onclick="sendCISignal('success')" style="background:var(--test-pass)">CI Passed</button>
         <button onclick="sendCISignal('failure')" style="background:var(--test-fail)">CI Failed</button>
-        <button class="danger" onclick="cancelSession()">Cancel Session</button>
+        <button class="danger" onclick="cancelSession()">Cancel</button>
       </div>
     </div>
 
-    <!-- PR review panel (shown for pr_review) -->
+    <!-- PR review panel -->
     <div class="assist-panel" id="review-panel" style="display:none">
       <h3>Waiting for PR Review</h3>
-      <p style="color:var(--text-secondary);font-size:13px">CI passed. Send a manual review signal:</p>
-      <div style="display:flex;gap:8px;margin-top:8px">
-        <button onclick="sendReviewSignal('approved')" style="background:var(--test-pass)">Approve PR</button>
+      <p style="color:var(--text-secondary);font-size:13px;margin-bottom:10px">CI passed. Send a manual review signal:</p>
+      <div style="display:flex;gap:8px">
+        <button onclick="sendReviewSignal('approved')" style="background:var(--test-pass)">Approve</button>
         <button onclick="sendReviewSignal('changes_requested')" style="background:var(--status-ci)">Request Changes</button>
-        <button class="danger" onclick="cancelSession()">Cancel Session</button>
+        <button class="danger" onclick="cancelSession()">Cancel</button>
       </div>
     </div>
 
-    <!-- Retry panel (shown for failed/cancelled) -->
+    <!-- Retry panel -->
     <div class="assist-panel" id="retry-panel" style="display:none">
       <h3>Session Failed</h3>
-      <div id="retry-error"></div>
+      <div id="retry-error" style="color:var(--text-secondary);font-size:13px"></div>
       <div style="display:flex;gap:8px;margin-top:12px">
         <button onclick="retrySession()">Retry Session</button>
       </div>
@@ -57,13 +57,13 @@
     <!-- Human assist panel -->
     <div class="assist-panel" id="assist-panel" style="display:none">
       <h3>Agent Needs Help</h3>
-      <div id="assist-context"></div>
-      <div class="form-group" style="margin-top:12px">
+      <div id="assist-context" style="color:var(--text-secondary);font-size:13px;margin-bottom:10px"></div>
+      <div class="form-group">
         <textarea id="assist-guidance" placeholder="Provide guidance..."></textarea>
       </div>
       <div style="display:flex;gap:8px">
         <button onclick="sendAssist()">Resume with Guidance</button>
-        <button class="danger" onclick="cancelSession()">Cancel Session</button>
+        <button class="danger" onclick="cancelSession()">Cancel</button>
       </div>
     </div>
 
@@ -103,7 +103,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=7"></script>
+  <script src="/static/app.js?v=8"></script>
   <script>
     const sessionId = new URLSearchParams(location.search).get('id');
     if (sessionId) { loadSessionDetail(sessionId); connectSSE(sessionId); }

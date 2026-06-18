@@ -276,7 +276,7 @@ function updateConfidencePanel(c) {
           <div>Lines: <span class="pass">+${c.lines_added}</span> / <span class="fail">-${c.lines_removed}</span></div>
         </div>
       </div>
-      ${(c.changed_files || []).length ? `<div style="margin-top:6px"><strong>Changed:</strong> ${c.changed_files.map(f => '<code style="font-size:11px;background:rgba(255,255,255,0.1);padding:1px 4px;border-radius:3px">' + escHtml(f) + '</code>').join(' ')}</div>` : ''}
+      ${(c.changed_files || []).length ? `<div style="margin-top:6px"><strong>Changed:</strong> ${c.changed_files.map(f => '<code style="font-size:11px;background:var(--bg-card);padding:2px 6px;border-radius:4px">' + escHtml(f) + '</code>').join(' ')}</div>` : ''}
       ${(c.new_dependencies || []).length ? `<div style="margin-top:4px;color:var(--status-ci)"><strong>New deps:</strong> ${c.new_dependencies.map(d => escHtml(d)).join(', ')}</div>` : ''}
       ${(c.risk_flags || []).length ? `<div style="margin-top:4px;color:var(--test-fail)"><strong>Risks:</strong> ${c.risk_flags.map(r => escHtml(r)).join(' · ')}</div>` : ''}
     </div>`;
