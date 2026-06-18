@@ -6,3 +6,4 @@ __pycache__/
 hydra.db
 hydra_demo.egg-info/
 .claude/
+hydra.db-wal
