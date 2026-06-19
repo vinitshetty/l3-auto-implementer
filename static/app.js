@@ -68,6 +68,8 @@ async function previewIssue() {
     const data = await api(`/issues/preview?repo_url=${encodeURIComponent(repo)}&issue_number=${num}`);
     el.textContent = data.title ? `Issue: ${data.title}` : 'Issue not found';
     el.style.display = 'block';
+    const taskDesc = document.getElementById('task_description');
+    if (data.title) taskDesc.value = data.title;
   } catch { el.style.display = 'none'; }
 }
 

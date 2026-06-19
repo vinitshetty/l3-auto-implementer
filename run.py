@@ -92,6 +92,29 @@ def cancel_running_workflows(db_path: str):
         conn.close()
 
 
+def mark_incomplete_sessions_failed(db_path: str):
+    """Mark any non-completed sessions as failed on startup.
+
+    Prevents Temporal from replaying stale workflows when the worker reconnects.
+    """
+    if not os.path.exists(db_path):
+        return
+
+    conn = sqlite3.connect(db_path)
+    try:
+        incomplete = ("pending", "running", "ci_monitoring", "pr_review", "needs_human", "changes_requested")
+        placeholders = ",".join("?" for _ in incomplete)
+        cursor = conn.execute(
+            f"UPDATE hydra_sessions SET status = 'failed' WHERE status IN ({placeholders})",
+            incomplete,
+        )
+        conn.commit()
+        if cursor.rowcount > 0:
+            print(f"  Marked {cursor.rowcount} incomplete session(s) as failed")
+    finally:
+        conn.close()
+
+
 def clear_all_sessions(db_path: str):
     """Delete all sessions and related data from the database."""
     if not os.path.exists(db_path):
@@ -134,6 +157,7 @@ def main():
         kill_existing_processes(args.port)
         cleanup_docker_containers()
         cancel_running_workflows(db_path)
+        mark_incomplete_sessions_failed(db_path)
         print(f"  Done. All Hydra processes killed.\n")
         return
 
@@ -148,8 +172,9 @@ def main():
     # Clean up orphaned Docker containers from previous runs
     cleanup_docker_containers()
 
-    # Cancel running workflows (but keep DB history)
+    # Cancel running workflows and mark as failed in DB
     cancel_running_workflows(db_path)
+    mark_incomplete_sessions_failed(db_path)
 
     print(f"  UI:  {url}")
     print(f"  API: http://{args.host}:{args.port}/api")
