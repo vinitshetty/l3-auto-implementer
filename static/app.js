@@ -370,8 +370,6 @@ async function showMetrics() {
       <div class="metric-card"><div class="metric-value">${data.total_sessions}</div><div class="metric-label">Total Sessions</div></div>
       <div class="metric-card"><div class="metric-value">${data.success_rate}%</div><div class="metric-label">Success Rate</div></div>
       <div class="metric-card"><div class="metric-value">${data.avg_iterations.toFixed(1)}</div><div class="metric-label">Avg Iterations</div></div>
-      <div class="metric-card"><div class="metric-value">${(data.avg_duration_ms/1000).toFixed(0)}s</div><div class="metric-label">Avg Duration</div></div>
-      <div class="metric-card"><div class="metric-value">${data.tokens_total.toLocaleString()}</div><div class="metric-label">Total Tokens</div></div>
     </div>
     <div class="card">
       <div class="card-title" style="margin-bottom:8px">Outcomes</div>

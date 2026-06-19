@@ -110,6 +110,7 @@ class EnhanceSpecParams(BaseModel):
     issue_body: str | None = None
     issue_type: str | None = None
     issue_labels: list[str] | None = None
+    repo_profile: str | None = None
     max_turns: int = 30
     max_price: float = 3.0
 
@@ -543,6 +544,9 @@ async def enhance_spec(params: EnhanceSpecParams) -> str:
         parts.append(f"Labels: {', '.join(params.issue_labels)}")
     if params.task_description and params.task_description != params.issue_title:
         parts.append(f"Additional context: {params.task_description}")
+    if params.repo_profile:
+        parts.append("")
+        parts.append(f"Repository context:\n{params.repo_profile}")
     parts.append("")
     parts.append("Your SPEC.md must include:")
     parts.append("1. Which files need to be modified or created")

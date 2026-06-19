@@ -352,6 +352,7 @@ class HydraSessionWorkflow:
                 issue_body=self.state.issue_body,
                 issue_type=self.state.issue_type,
                 issue_labels=self.state.issue_labels,
+                repo_profile=self.state.repo_profile_text,
             ))
             logger.info("Enhanced spec generated (%d chars)", len(self.state.enhanced_spec))
         except Exception as e:

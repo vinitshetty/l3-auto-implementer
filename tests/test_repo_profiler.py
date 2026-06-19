@@ -3,9 +3,6 @@
 import pytest
 from unittest.mock import AsyncMock, patch
 
-from httpx import ASGITransport, AsyncClient
-
-from app.main import app
 from app.repo_profiler import (
     _assemble_profile_text,
     _detect_ci_setup,
@@ -202,59 +199,39 @@ async def test_delete_repo_profile_not_found(client, db_session):
 
 
 @pytest.mark.asyncio
-async def test_repo_profile_crud(db_engine):
+async def test_repo_profile_crud(client, db_session):
     """Create a profile in DB and verify CRUD endpoints."""
-    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-    from app.database import get_db
     from app.models import RepoProfile
 
-    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    profile = RepoProfile(
+        repo_url="https://github.com/test/repo",
+        owner="test",
+        repo_name="repo",
+        head_sha="abc123",
+        profile_text="# Test Profile",
+        tech_stack={"languages": ["python"]},
+    )
+    db_session.add(profile)
+    await db_session.commit()
+    await db_session.refresh(profile)
 
-    # Also patch app.database.async_session used by the API endpoints
-    async def override_get_db():
-        async with session_factory() as session:
-            yield session
+    # List
+    resp = await client.get("/api/repo-profiles")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["repo_url"] == "https://github.com/test/repo"
 
-    # Patch both the FastAPI dependency and the module-level async_session
-    app.dependency_overrides[get_db] = override_get_db
+    # Get
+    resp = await client.get(f"/api/repo-profiles/{profile.id}")
+    assert resp.status_code == 200
+    assert resp.json()["profile_text"] == "# Test Profile"
 
-    with patch("app.api.repo_profiles.async_session", session_factory):
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            # Insert a profile directly
-            async with session_factory() as db:
-                profile = RepoProfile(
-                    repo_url="https://github.com/test/repo",
-                    owner="test",
-                    repo_name="repo",
-                    head_sha="abc123",
-                    profile_text="# Test Profile",
-                    tech_stack={"languages": ["python"]},
-                )
-                db.add(profile)
-                await db.commit()
-                await db.refresh(profile)
-                profile_id = profile.id
+    # Delete
+    resp = await client.delete(f"/api/repo-profiles/{profile.id}")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "deleted"
 
-            # List
-            resp = await client.get("/api/repo-profiles")
-            assert resp.status_code == 200
-            data = resp.json()
-            assert len(data) == 1
-            assert data[0]["repo_url"] == "https://github.com/test/repo"
-
-            # Get
-            resp = await client.get(f"/api/repo-profiles/{profile_id}")
-            assert resp.status_code == 200
-            assert resp.json()["profile_text"] == "# Test Profile"
-
-            # Delete
-            resp = await client.delete(f"/api/repo-profiles/{profile_id}")
-            assert resp.status_code == 200
-            assert resp.json()["status"] == "deleted"
-
-            # Verify deleted
-            resp = await client.get(f"/api/repo-profiles/{profile_id}")
-            assert resp.status_code == 404
-
-    app.dependency_overrides.clear()
+    # Verify deleted
+    resp = await client.get(f"/api/repo-profiles/{profile.id}")
+    assert resp.status_code == 404
