@@ -199,6 +199,26 @@ class TraceResponse(BaseModel):
     summary: SessionMetricsResponse | None = None
 
 
+class RepoProfileResponse(BaseModel):
+    id: str
+    repo_url: str
+    owner: str
+    repo_name: str
+    head_sha: str
+    tech_stack: dict = {}
+    architecture_summary: str = ""
+    module_map: dict = {}
+    conventions: dict = {}
+    entry_points: list = []
+    test_setup: dict = {}
+    ci_setup: dict = {}
+    profile_text: str = ""
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class FailureReasonCount(BaseModel):
     reason: str
     count: int

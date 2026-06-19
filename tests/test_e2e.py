@@ -56,6 +56,7 @@ def _make_patches(test_results_fn=None):
         "app.workflows.hydra_session.document_changes": AsyncMock(return_value="# Changes\n- Fixed login bug"),
         "app.workflows.hydra_session.update_pr_body": AsyncMock(return_value=None),
         "app.workflows.hydra_session.destroy_sandbox": destroy_mock,
+        "app.workflows.hydra_session.get_or_create_repo_profile": AsyncMock(return_value=""),
         "app.workflows.hydra_session.workflow.wait_condition": AsyncMock(side_effect=_mock_wait_condition),
     }
     started = [patch(k, v) for k, v in patches_dict.items()]

@@ -93,6 +93,14 @@ class BuildPromptParams(BaseModel):
     issue_labels: list[str] | None = None
     triage_approach: str | None = None
     triage_files: list[str] | None = None
+    repo_profile: str | None = None
+
+
+class GetOrCreateRepoProfileParams(BaseModel):
+    container_id: str
+    repo_url: str
+    owner: str
+    repo: str
 
 
 class EnhanceSpecParams(BaseModel):
@@ -180,6 +188,24 @@ async def update_session_status(params: UpdateSessionStatusParams) -> None:
         )
         db.add(event)
         await db.commit()
+
+        # Compute and persist session metrics on terminal status
+        if params.status in ("completed", "failed", "cancelled"):
+            try:
+                from app.observability import Tracer
+                from app.event_bus import event_bus as _event_bus
+                tracer = Tracer(
+                    session_id=params.session_id,
+                    trace_id=params.session_id,
+                    event_bus=_event_bus,
+                    db=db,
+                )
+                metrics = await tracer.compute_session_metrics()
+                metrics.outcome = params.status
+                metrics.failure_reason = params.error_summary
+                await db.commit()
+            except Exception:
+                pass
 
     try:
         from app.event_bus import event_bus
@@ -417,6 +443,84 @@ async def destroy_sandbox(params: DestroyParams) -> None:
     await sandbox.destroy(params.container_id)
 
 
+@activity(start_to_close_timeout=timedelta(minutes=15), name="get_or_create_repo_profile")
+async def get_or_create_repo_profile(params: GetOrCreateRepoProfileParams) -> str:
+    """Get cached repo profile or generate a new one. Returns profile_text."""
+    from app.config import settings
+    if not settings.repo_profile_enabled:
+        return ""
+
+    from app.database import async_session
+    from app.models import RepoProfile
+    from app.sandbox.manager import SandboxManager
+    from app.repo_profiler import generate_repo_profile
+    from sqlalchemy import select
+
+    sandbox = SandboxManager()
+
+    # Get current HEAD SHA
+    head_result = await sandbox.exec_in_container(
+        params.container_id, "git -C /workspace rev-parse HEAD"
+    )
+    current_sha = head_result.stdout.strip()[:40]
+
+    # Check for cached profile
+    async with async_session() as db:
+        stmt = select(RepoProfile).where(RepoProfile.repo_url == params.repo_url)
+        result = await db.execute(stmt)
+        cached = result.scalar_one_or_none()
+
+        if cached:
+            # Check staleness: count commits between cached SHA and current HEAD
+            distance_result = await sandbox.exec_in_container(
+                params.container_id,
+                f"git -C /workspace rev-list --count {cached.head_sha}..HEAD 2>/dev/null || echo 999"
+            )
+            try:
+                commit_distance = int(distance_result.stdout.strip())
+            except ValueError:
+                commit_distance = 999
+
+            if commit_distance <= settings.repo_profile_stale_commits:
+                logger.info(
+                    "Using cached repo profile for %s (age: %d commits)",
+                    params.repo_url, commit_distance,
+                )
+                return cached.profile_text
+
+            logger.info(
+                "Repo profile stale for %s (%d commits behind), regenerating",
+                params.repo_url, commit_distance,
+            )
+
+    # Generate new profile
+    logger.info("Generating repo profile for %s", params.repo_url)
+    profile_data = await generate_repo_profile(sandbox, params.container_id)
+
+    # Upsert into DB
+    async with async_session() as db:
+        stmt = select(RepoProfile).where(RepoProfile.repo_url == params.repo_url)
+        result = await db.execute(stmt)
+        existing = result.scalar_one_or_none()
+
+        if existing:
+            for key, value in profile_data.items():
+                setattr(existing, key, value)
+        else:
+            profile = RepoProfile(
+                repo_url=params.repo_url,
+                owner=params.owner,
+                repo_name=params.repo,
+                **profile_data,
+            )
+            db.add(profile)
+
+        await db.commit()
+
+    logger.info("Repo profile saved for %s (%d chars)", params.repo_url, len(profile_data["profile_text"]))
+    return profile_data["profile_text"]
+
+
 @activity(start_to_close_timeout=timedelta(minutes=10), name="enhance_spec")
 async def enhance_spec(params: EnhanceSpecParams) -> str:
     """Analyze the codebase and produce a detailed implementation spec.
@@ -561,6 +665,9 @@ def build_prompt(params: BuildPromptParams) -> str:
         parts.append(f"Original task: {params.task}")
     else:
         parts.append(params.task)
+
+    if params.repo_profile:
+        parts.append(f"Repository context:\n{params.repo_profile}")
 
     if params.triage_approach:
         parts.append(f"Suggested approach: {params.triage_approach}")

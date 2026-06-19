@@ -89,6 +89,29 @@ class SessionEvent(Base):
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
+class RepoProfile(Base):
+    """Cached understanding of a repository — structure, stack, conventions."""
+    __tablename__ = "repo_profiles"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    repo_url: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
+    owner: Mapped[str] = mapped_column(String, nullable=False)
+    repo_name: Mapped[str] = mapped_column(String, nullable=False)
+    head_sha: Mapped[str] = mapped_column(String, nullable=False)
+    file_tree: Mapped[str] = mapped_column(Text, default="")
+    tech_stack: Mapped[dict] = mapped_column(JSON, default=dict)
+    architecture_summary: Mapped[str] = mapped_column(Text, default="")
+    module_map: Mapped[dict] = mapped_column(JSON, default=dict)
+    conventions: Mapped[dict] = mapped_column(JSON, default=dict)
+    entry_points: Mapped[list] = mapped_column(JSON, default=list)
+    test_setup: Mapped[dict] = mapped_column(JSON, default=dict)
+    ci_setup: Mapped[dict] = mapped_column(JSON, default=dict)
+    key_files_content: Mapped[dict] = mapped_column(JSON, default=dict)
+    profile_text: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
 class SessionMetrics(Base):
     __tablename__ = "session_metrics"
 

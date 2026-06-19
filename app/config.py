@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     max_ci_iterations: int = 3
     vibe_max_turns: int = 50
     vibe_max_price: float = 5.0
+    repo_profile_enabled: bool = True  # Enable cached repo profiling for large repos
+    repo_profile_stale_commits: int = 30  # Refresh profile if HEAD is this many commits ahead
 
 
 settings = Settings()

@@ -57,10 +57,12 @@ app = FastAPI(title="Hydra Demo", lifespan=lifespan)
 from app.api.sessions import router as sessions_router  # noqa: E402
 from app.api.webhooks import router as webhooks_router  # noqa: E402
 from app.api.events import router as events_router  # noqa: E402
+from app.api.repo_profiles import router as repo_profiles_router  # noqa: E402
 
 app.include_router(sessions_router, prefix="/api")
 app.include_router(webhooks_router, prefix="/api")
 app.include_router(events_router, prefix="/api")
+app.include_router(repo_profiles_router, prefix="/api")
 
 # Static files — mount last so API routes take priority
 static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")

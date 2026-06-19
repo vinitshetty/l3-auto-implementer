@@ -29,6 +29,7 @@ with workflow.unsafe.imports_passed_through():
         DocumentChangesParams,
         EnhanceSpecParams,
         FetchIssueParams,
+        GetOrCreateRepoProfileParams,
         OpenPRParams,
         ProvisionSandboxParams,
         RunTestsParams,
@@ -43,6 +44,7 @@ with workflow.unsafe.imports_passed_through():
         enhance_spec,
         fetch_issue,
         generate_confidence_summary,
+        get_or_create_repo_profile,
         open_pr,
         provision_sandbox,
         run_tests,
@@ -101,6 +103,7 @@ class WorkflowState(BaseModel):
     enhanced_spec: str | None = None
     change_docs: str | None = None
     pr_number: int | None = None
+    repo_profile_text: str | None = None
 
 
 # --- Signal payloads ---
@@ -213,6 +216,7 @@ class HydraSessionWorkflow:
             issue_labels=self.state.issue_labels,
             triage_approach=self.state.triage_suggested_approach,
             triage_files=self.state.triage_relevant_files,
+            repo_profile=self.state.repo_profile_text,
         ))
 
         # -- Phase 2: Code and Test --
@@ -314,11 +318,26 @@ class HydraSessionWorkflow:
                 token=input.github_token,
             ))
 
+        # Generate or fetch cached repo profile (if enabled)
+        try:
+            self.state.repo_profile_text = await get_or_create_repo_profile(
+                GetOrCreateRepoProfileParams(
+                    container_id=self.state.container_id,
+                    repo_url=input.repo_url,
+                    owner=input.owner,
+                    repo=input.repo,
+                )
+            )
+        except Exception as e:
+            logger.warning("Repo profile generation failed, continuing without: %s", e)
+            self.state.repo_profile_text = ""
+
         issue_info = f" — Issue #{self.state.issue_number}: {self.state.issue_title}" if self.state.issue_number else ""
+        profile_info = " (repo profile cached)" if self.state.repo_profile_text else ""
         await update_session_status(UpdateSessionStatusParams(
             session_id=input.session_id, status="running",
             issue_title=self.state.issue_title, issue_type=self.state.issue_type,
-            message=f"Sandbox ready, cloned {input.repo_url} on branch {self.state.branch_name}{issue_info}",
+            message=f"Sandbox ready, cloned {input.repo_url} on branch {self.state.branch_name}{issue_info}{profile_info}",
         ))
 
     async def _phase_enhance_spec(self, input: SessionInput):
