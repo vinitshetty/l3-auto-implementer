@@ -67,6 +67,75 @@
       </div>
     </div>
 
+    <!-- Workflow DAG -->
+    <div class="dag-wrapper">
+      <!-- Phase progress bar -->
+      <div class="dag-progress">
+        <div class="dag-progress-fill" id="dag-progress-fill"></div>
+      </div>
+      <div class="dag-phases" id="workflow-dag">
+        <div class="dag-phase" id="dag-prepare">
+          <div class="dag-phase-header">
+            <div class="dag-phase-num">1</div>
+            <div>
+              <div class="dag-phase-title">Prepare</div>
+              <div class="dag-phase-subtitle" id="dag-prepare-status">Pending</div>
+            </div>
+          </div>
+          <div class="dag-steps">
+            <div class="dag-step" data-step="fetch_issue"><span class="dag-dot"></span>fetch_issue</div>
+            <div class="dag-step" data-step="provision_sandbox"><span class="dag-dot"></span>provision_sandbox</div>
+            <div class="dag-step" data-step="clone_repo"><span class="dag-dot"></span>clone_repo</div>
+            <div class="dag-step" data-step="get_or_create_repo_profile"><span class="dag-dot"></span>get_or_create_repo_profile</div>
+          </div>
+        </div>
+        <div class="dag-phase" id="dag-code">
+          <div class="dag-phase-header">
+            <div class="dag-phase-num">2</div>
+            <div>
+              <div class="dag-phase-title">Code</div>
+              <div class="dag-phase-subtitle" id="dag-code-status">Pending</div>
+            </div>
+          </div>
+          <div class="dag-steps">
+            <div class="dag-step" data-step="enhance_spec"><span class="dag-dot"></span>enhance_spec</div>
+            <div class="dag-step" data-step="run_vibe_code"><span class="dag-dot"></span>run_vibe_code</div>
+            <div class="dag-step" data-step="run_tests"><span class="dag-dot"></span>run_tests</div>
+            <div class="dag-step" data-step="generate_confidence_summary"><span class="dag-dot"></span>generate_confidence_summary</div>
+            <div class="dag-step" data-step="commit_and_push"><span class="dag-dot"></span>commit_and_push</div>
+          </div>
+        </div>
+        <div class="dag-phase" id="dag-document">
+          <div class="dag-phase-header">
+            <div class="dag-phase-num">3</div>
+            <div>
+              <div class="dag-phase-title">Document</div>
+              <div class="dag-phase-subtitle" id="dag-document-status">Pending</div>
+            </div>
+          </div>
+          <div class="dag-steps">
+            <div class="dag-step" data-step="open_pr"><span class="dag-dot"></span>open_pr</div>
+            <div class="dag-step" data-step="document_changes"><span class="dag-dot"></span>document_changes</div>
+            <div class="dag-step" data-step="update_pr_body"><span class="dag-dot"></span>update_pr_body</div>
+          </div>
+        </div>
+        <div class="dag-phase" id="dag-deploy">
+          <div class="dag-phase-header">
+            <div class="dag-phase-num">4</div>
+            <div>
+              <div class="dag-phase-title">Deploy</div>
+              <div class="dag-phase-subtitle" id="dag-deploy-status">Pending</div>
+            </div>
+          </div>
+          <div class="dag-steps">
+            <div class="dag-step" data-step="ci_result"><span class="dag-dot"></span>ci_result</div>
+            <div class="dag-step" data-step="review_feedback"><span class="dag-dot"></span>review_feedback</div>
+            <div class="dag-step" data-step="destroy_sandbox"><span class="dag-dot"></span>destroy_sandbox</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Panels -->
     <div class="panel">
       <div class="panel-header" onclick="togglePanel('events')">Event Stream</div>
@@ -103,7 +172,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=8"></script>
+  <script src="/static/app.js?v=10"></script>
   <script>
     const sessionId = new URLSearchParams(location.search).get('id');
     if (sessionId) { loadSessionDetail(sessionId); connectSSE(sessionId); }

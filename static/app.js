@@ -109,6 +109,14 @@ async function loadSessionDetail(id) {
   try {
     if (!live) throw new Error('no live data');
 
+    // Initialize DAG from live workflow status (no message, just status)
+    if (live.status === 'running') {
+      // Running could be prepare or code — SSE replay will set the right state
+      dagSetPhase('prepare', 'active');
+    } else if (live.status) {
+      dagHandleSSE({ event_type: 'status_change', payload: live });
+    }
+
     if (live.status === 'ci_monitoring') {
       const ciPanel = document.getElementById('ci-panel');
       if (ciPanel) ciPanel.style.display = 'block';
@@ -202,10 +210,11 @@ function connectSSE(id) {
   _currentSSE = es;
   const stream = document.getElementById('event-stream');
 
-  es.onmessage = (e) => appendEvent(stream, JSON.parse(e.data));
+  es.onmessage = (e) => { const d = JSON.parse(e.data); appendEvent(stream, d); };
   es.addEventListener('status_change', (e) => {
     const data = JSON.parse(e.data);
     appendEvent(stream, data, 'event-status');
+    dagHandleSSE(data);
     // Update status badge and panels in real-time
     const payload = data.payload || data;
     const newStatus = payload.status;
@@ -392,6 +401,151 @@ function togglePanel(name) {
   const body = document.getElementById(`${name}-panel`);
   if (body) body.classList.toggle('collapsed');
 }
+
+// --- Workflow DAG Tracker ---
+// Tracks progress by matching status_change event messages from the workflow.
+// The workflow emits status_change events at key transitions with distinctive messages.
+
+const DAG_PHASE_IDS = ['prepare', 'code', 'document', 'deploy'];
+const DAG_PHASE_STEPS = {
+  prepare:  ['fetch_issue', 'provision_sandbox', 'clone_repo', 'get_or_create_repo_profile'],
+  code:     ['enhance_spec', 'run_vibe_code', 'run_tests', 'generate_confidence_summary', 'commit_and_push'],
+  document: ['open_pr', 'document_changes', 'update_pr_body'],
+  deploy:   ['ci_result', 'review_feedback', 'destroy_sandbox'],
+};
+
+// Message patterns → what DAG state they imply
+// Each rule: { match: string|regex, phase: phaseId, completedPhases: [...], activeSteps: [...], completedSteps: [...] }
+const DAG_MESSAGE_RULES = [
+  // Phase 1: Prepare — "Starting workflow" message
+  { match: /Starting workflow/i, setPhase: 'prepare', activeStep: 'fetch_issue' },
+  // Phase 1 complete: "Sandbox ready" message
+  { match: /Sandbox ready/i, completePhase: 'prepare', setPhase: 'code', activeStep: 'enhance_spec' },
+  // Phase 2 progress: "Coding complete" message
+  { match: /Coding complete/i, completeSteps: ['enhance_spec', 'run_vibe_code', 'run_tests'], activeStep: 'generate_confidence_summary' },
+  // Phase 2→3: "PR #" or "PR created" message
+  { match: /PR (#|created)/i, completePhase: 'code', setPhase: 'document', activeStep: 'open_pr', completeSteps: ['generate_confidence_summary', 'commit_and_push'] },
+  // Phase 3→4: status goes to ci_monitoring
+  { statusMatch: 'ci_monitoring', completePhase: 'document', setPhase: 'deploy', activeStep: 'ci_result' },
+  // Deploy progress: CI passed
+  { match: /CI passed/i, completeSteps: ['ci_result'], activeStep: 'review_feedback' },
+  { statusMatch: 'pr_review', completeSteps: ['ci_result'], activeStep: 'review_feedback' },
+  // Terminal states
+  { statusMatch: 'completed', completeAllPhases: true },
+  { statusMatch: 'failed', failCurrentPhase: true },
+  { statusMatch: 'cancelled', failCurrentPhase: true },
+];
+
+let _dagCurrentPhase = null;
+
+function dagSetPhase(phaseId, status) {
+  const phaseEl = document.getElementById(`dag-${phaseId}`);
+  if (!phaseEl) return;
+  phaseEl.classList.remove('phase-active', 'phase-completed', 'phase-failed');
+  const sub = document.getElementById(`dag-${phaseId}-status`);
+  if (status === 'active') {
+    phaseEl.classList.add('phase-active');
+    if (sub) sub.textContent = 'Running...';
+    _dagCurrentPhase = phaseId;
+  } else if (status === 'completed') {
+    phaseEl.classList.add('phase-completed');
+    if (sub) sub.textContent = 'Done';
+    // Mark all steps in phase as completed
+    (DAG_PHASE_STEPS[phaseId] || []).forEach(s => dagSetStep(s, 'completed'));
+  } else if (status === 'failed') {
+    phaseEl.classList.add('phase-failed');
+    if (sub) sub.textContent = 'Failed';
+  }
+}
+
+function dagSetStep(stepId, status) {
+  const el = document.querySelector(`.dag-step[data-step="${stepId}"]`);
+  if (!el) return;
+  el.classList.remove('step-active', 'step-completed', 'step-failed');
+  if (status) el.classList.add(`step-${status}`);
+}
+
+function dagUpdateProgress() {
+  const fill = document.getElementById('dag-progress-fill');
+  if (!fill) return;
+  let done = 0, active = 0;
+  for (const id of DAG_PHASE_IDS) {
+    const el = document.getElementById(`dag-${id}`);
+    if (el && el.classList.contains('phase-completed')) done++;
+    else if (el && el.classList.contains('phase-active')) active++;
+  }
+  fill.style.width = Math.min((done * 25) + (active * 12), 100) + '%';
+}
+
+function dagCompletePhasesBefore(phaseId) {
+  const idx = DAG_PHASE_IDS.indexOf(phaseId);
+  for (let i = 0; i < idx; i++) {
+    const prev = DAG_PHASE_IDS[i];
+    const el = document.getElementById(`dag-${prev}`);
+    if (el && !el.classList.contains('phase-completed')) {
+      dagSetPhase(prev, 'completed');
+    }
+  }
+}
+
+function dagHandleSSE(data) {
+  const eventType = data.event_type || data.type || '';
+  if (eventType !== 'status_change') return;
+
+  const payload = data.payload || data;
+  const msg = payload.message || '';
+  const status = payload.status || '';
+
+  for (const rule of DAG_MESSAGE_RULES) {
+    // Check if rule matches
+    let matched = false;
+    if (rule.match && rule.match.test(msg)) matched = true;
+    if (rule.statusMatch && status === rule.statusMatch) matched = true;
+    if (!matched) continue;
+
+    // Complete prior phases
+    if (rule.completePhase) {
+      dagSetPhase(rule.completePhase, 'completed');
+    }
+
+    // Set active phase
+    if (rule.setPhase) {
+      dagCompletePhasesBefore(rule.setPhase);
+      dagSetPhase(rule.setPhase, 'active');
+    }
+
+    // Complete specific steps
+    if (rule.completeSteps) {
+      rule.completeSteps.forEach(s => dagSetStep(s, 'completed'));
+    }
+
+    // Clear old active, set new active step
+    if (rule.activeStep) {
+      document.querySelectorAll('.dag-step.step-active').forEach(el => el.classList.remove('step-active'));
+      dagSetStep(rule.activeStep, 'active');
+    }
+
+    // Complete all phases (terminal success)
+    if (rule.completeAllPhases) {
+      DAG_PHASE_IDS.forEach(id => dagSetPhase(id, 'completed'));
+    }
+
+    // Fail current phase (terminal failure)
+    if (rule.failCurrentPhase) {
+      document.querySelectorAll('.dag-step.step-active').forEach(el => {
+        el.classList.remove('step-active');
+        el.classList.add('step-failed');
+      });
+      if (_dagCurrentPhase) dagSetPhase(_dagCurrentPhase, 'failed');
+    }
+
+    dagUpdateProgress();
+    // Don't break — multiple rules can match (e.g. status + message)
+  }
+}
+
+// Initialize DAG from replayed SSE events (handled automatically since
+// all past status_change events replay through the same dagHandleSSE)
 
 // --- Utils ---
 
