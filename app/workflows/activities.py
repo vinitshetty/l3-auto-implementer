@@ -678,6 +678,11 @@ def build_prompt(params: BuildPromptParams) -> str:
     if params.triage_files:
         parts.append(f"Relevant files: {', '.join(params.triage_files)}")
 
+    parts.append(
+        "CRITICAL: Do NOT hallucinate or invent functions/APIs. "
+        "Before using ANY function, READ its source file to verify it exists and check its exact signature. "
+        "If a function doesn't exist, implement it yourself or use an alternative that does exist."
+    )
     parts.append("Follow TDD: Write failing tests FIRST, then implement code to make them pass, then refactor.")
     parts.append("Remember: You must make actual code changes. Create or modify files as needed.")
 
